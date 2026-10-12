@@ -3,7 +3,7 @@
 
 启动后仅监听 127.0.0.1:8765，使用系统 Edge/Chrome + Playwright 模拟正规网页操作。
 不调用隐藏接口，不绕过网站验证码或访问限制；实际页面结构变化可能导致自动模式失败。
-兼容老版官方 API 代理路径 /api/removebg。
+AI 抠图通过已有浏览器访问网站；不提供官方 API 代理。
 """
 import base64
 import json
@@ -29,7 +29,6 @@ AUTOMATION_PROTOCOL = 13
 # Third-party sites may show ads and unrelated links; automated clicks must remain in the tool.
 ALLOWED_HOSTS = frozenset(('koukoutu.com', 'www.koukoutu.com'))
 SITE = 'https://www.koukoutu.com/removebgtool/all'
-API = 'https://sync.koukoutu.com/v1/create'
 LIMIT = 45 * 1024 * 1024
 workdir = tempfile.TemporaryDirectory(prefix='patchi_bg_')
 lock = threading.RLock()
@@ -1857,7 +1856,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path.exists():return self.reply_json(404,{'error':'编辑器HTML不存在，请重新解压完整包'})
             return self.reply(200,path.read_bytes(),'text/html; charset=utf-8')
         if self.path == '/health':
-            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.12.4', 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
+            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.12.5', 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
         if self.path == '/auto/status':
             return self.reply_json(200, api_state())
         if self.path.startswith('/auto/diagnostic/'):
@@ -1899,6 +1898,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply_json(403,{'error':'拒绝非本地编辑器请求'})
             if self.path.startswith('/gemini/') and origin != f'http://{HOST}:{PORT}' and origin != f'http://localhost:{PORT}':
                 return self.reply_json(403, {'error':'请从本机助手 http://127.0.0.1:8765 打开编辑器；不要双击 HTML 文件'})
+            if self.path == '/replace/pose/preview':
+                if origin not in (f'http://{HOST}:{PORT}', f'http://localhost:{PORT}'):
+                    return self.reply_json(403, {'error':'请从本机编辑器标记 Logo'})
+                from patchi_pose import preview as pose_preview
+                body=json.loads(self.body(limit=38*1024*1024))
+                return self.reply_json(200,pose_preview(body.get('source'),body.get('sourceLogoBoxes')))
             if self.path.startswith('/replace/batch/'):
                 if origin not in (f'http://{HOST}:{PORT}', f'http://localhost:{PORT}'):
                     return self.reply_json(403, {'error':'请从本机编辑器启动批量套图'})
@@ -1978,21 +1983,6 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/auto/stop':
                 with lock: stop_flag=True;message='已请求停止，等待正在进行的网页操作结束'
                 return self.reply_json(200,{'ok':True})
-            if self.path == '/api/removebg':
-                key=self.headers.get('X-API-Key','').strip()
-                if not key: return self.reply_json(401,{'error':'API Key required'})
-                ct=self.headers.get('Content-Type','')
-                if not ct.startswith('multipart/form-data;'): return self.reply_json(415,{'error':'multipart required'})
-                body=self.body()
-                req=urllib.request.Request(API,data=body,method='POST',headers={
-                    'X-API-Key':key, 'Content-Type':ct,'Accept':'image/png, application/json'})
-                try:
-                    with urllib.request.urlopen(req,timeout=180) as r:
-                        return self.reply(r.status,r.read(65*1024*1024),r.headers.get('Content-Type','application/octet-stream'))
-                except urllib.error.HTTPError as e:
-                    return self.reply(e.code,e.read(8192),e.headers.get('Content-Type','text/plain'))
-                except Exception as e:
-                    return self.reply_json(502,{'error':str(e)})
             return self.reply_json(404,{'error':'not found'})
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
             return self.reply_json(400,{'error':str(e)})
@@ -2010,7 +2000,7 @@ if __name__=='__main__':
             current = json.load(response)
         if (current.get('service') == 'patchi-helper'
                 and current.get('automationProtocol') == AUTOMATION_PROTOCOL
-                and current.get('appVersion') == '2026.10.12.4'):
+                and current.get('appVersion') == '2026.10.12.5'):
             print('当前修复版已在运行，正在打开编辑器。')
             if os.getenv('PAQI_NO_BROWSER') != '1': webbrowser.open(f'http://{HOST}:{PORT}/')
             sys.exit(0)
