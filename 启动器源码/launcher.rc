@@ -1,0 +1,27 @@
+
+101 RCDATA "launcher.ps1"
+1 24 "launcher.manifest"
+1 VERSIONINFO
+FILEVERSION 2026,10,12,3
+PRODUCTVERSION 2026,10,12,3
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Patchi Workshop Launcher\0"
+      VALUE "ProductName", "Patchi Workshop\0"
+      VALUE "FileVersion", "2026.10.12.3\0"
+      VALUE "ProductVersion", "2026.10.12.3\0"
+      VALUE "OriginalFilename", "PatchiLauncher.exe\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END

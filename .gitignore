@@ -1,0 +1,7 @@
+.venv/
+.venv.backup-*/
+.runtime/
+__pycache__/
+*.py[cod]
+*.log
+work/
