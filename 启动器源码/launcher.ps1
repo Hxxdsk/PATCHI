@@ -3,6 +3,53 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Net.Http
+# Native Windows controls with custom antialiased surfaces; no extra UI runtime.
+$UiSource = @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Windows.Forms;
+using System.Runtime.InteropServices;
+namespace PatchiUI {
+ public static class Shapes {
+  public static GraphicsPath Rounded(Rectangle r, int radius) {
+   int d=Math.Min(radius*2,Math.Min(r.Width,r.Height)); var p=new GraphicsPath();
+   p.AddArc(r.X,r.Y,d,d,180,90);p.AddArc(r.Right-d,r.Y,d,d,270,90);
+   p.AddArc(r.Right-d,r.Bottom-d,d,d,0,90);p.AddArc(r.X,r.Bottom-d,d,d,90,90);p.CloseFigure();return p;
+  }
+ }
+ public class Card:Panel {
+  public Color Surface {get;set;}
+  public Card(){SetStyle(ControlStyles.SupportsTransparentBackColor,true);Surface=Color.FromArgb(27,33,48);DoubleBuffered=true;BackColor=Color.Transparent;}
+  protected override void OnPaint(PaintEventArgs e){
+   e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
+   using(var p=Shapes.Rounded(new Rectangle(0,0,Width-1,Height-1),18))
+   using(var b=new SolidBrush(Surface)){e.Graphics.FillPath(b,p);}
+   base.OnPaint(e);
+  }
+ }
+ public class ActionButton:Button {
+  public Color Surface {get;set;}
+  private bool hover;
+  public ActionButton(){Surface=Color.FromArgb(44,51,70);SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.SupportsTransparentBackColor,true);FlatStyle=FlatStyle.Flat;FlatAppearance.BorderSize=0;Cursor=Cursors.Hand;BackColor=Color.Transparent;}
+  protected override void OnMouseEnter(EventArgs e){hover=true;Invalidate();base.OnMouseEnter(e);}
+  protected override void OnMouseLeave(EventArgs e){hover=false;Invalidate();base.OnMouseLeave(e);}
+  protected override void OnPaint(PaintEventArgs e){
+   e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
+   Color bg=Enabled?(hover?ControlPaint.Light(Surface,.15f):Surface):Color.FromArgb(34,40,54);
+   using(var p=Shapes.Rounded(new Rectangle(0,0,Width-1,Height-1),12))
+   using(var b=new SolidBrush(bg)){e.Graphics.FillPath(b,p);if(Focused){using(var pen=new Pen(Color.FromArgb(165,178,231),2)){e.Graphics.DrawPath(pen,p);}}}
+   TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,Enabled?ForeColor:Color.FromArgb(108,119,142),TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter);
+  }
+ }
+ public class Window:Form {
+  [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd,int attr,ref int value,int size);
+  protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);try{int dark=1;DwmSetWindowAttribute(Handle,20,ref dark,4);}catch{}}
+ }
+}
+'@
+Add-Type -TypeDefinition $UiSource -ReferencedAssemblies System.Windows.Forms,System.Drawing
+
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $script:Runtime = Join-Path $AppDir '.runtime'
@@ -10,14 +57,14 @@ $script:Log = Join-Path $script:Runtime 'launcher.log'
 $script:Busy = $false
 $script:StopRequested = $false
 $script:State = $null
-$Version = '2026.10.12.3'
+$Version = '2026.10.12.4'
 $PythonUrl = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe'
 $PythonSha = '67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb'
 $Probe = @'
 import sys,json,struct,importlib,importlib.metadata as m
-ok=(3,10)<=sys.version_info[:2]<(3,14) and struct.calcsize('P')==8
+ok=sys.version_info[:2]>=(3,10) and struct.calcsize('P')==8
 bad=[]
-for mod,dist,lo,hi in [('numpy','numpy',(1,24),(3,)),('cv2','opencv-python',(4,8),(5,)),('PIL','Pillow',(10,),(13,)),('playwright.sync_api','playwright',(1,40),(2,))]:
+for mod,dist,lo in [('numpy','numpy',(1,24)),('cv2','opencv-python',(4,8)),('PIL','Pillow',(10,)),('playwright.sync_api','playwright',(1,40))]:
  try:
   x=importlib.import_module(mod)
   if mod=='cv2' and not hasattr(x,'SIFT_create'): raise ValueError('SIFT')
@@ -26,7 +73,7 @@ for mod,dist,lo,hi in [('numpy','numpy',(1,24),(3,)),('cv2','opencv-python',(4,8
    if dist!='opencv-python': raise
    version=m.version('opencv-python-headless')
   ver=tuple(int(n) for n in version.split('.')[:2])
-  if not lo<=ver<hi: raise ValueError('version')
+  if ver<lo: raise ValueError('version')
  except Exception: bad.append(dist)
 print(json.dumps({'supported':ok,'exe':sys.executable,'version':sys.version.split()[0],'missing':bad},ensure_ascii=True))
 '@
@@ -77,7 +124,11 @@ function Invoke-Child([string]$Exe, [string[]]$ArgsList, [int]$TimeoutSec=600) {
 function Probe-Python([string]$Exe) {
     try {
         if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) { return $null }
-        if ($Exe -like '*\WindowsApps\*') { return $null }
+        if ($Exe -like '*\WindowsApps\*') {
+            # Do not confuse an installed Store Python with the empty Store alias.
+            $packages=@(Get-AppxPackage -Name 'PythonSoftwareFoundation.Python.*' -ErrorAction SilentlyContinue)
+            if(-not $packages.Count){return $null}
+        }
         $r=Invoke-Child $Exe @('-c',$Probe) 20
         if ($r.Code -ne 0) { return $null }
         $x=$r.Out.Trim() | ConvertFrom-Json
@@ -100,7 +151,9 @@ function Find-Python {
         }}
     }
     foreach($cmd in @(Get-Command python.exe,python3.exe -ErrorAction SilentlyContinue)) { if($cmd){$paths.Add($cmd.Source)} }
-    foreach($p in @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python*\python.exe') -ErrorAction SilentlyContinue)){$paths.Add($p.FullName)}
+    foreach($pattern in @('Programs\Python\Python*\python.exe','Python\pythoncore-*\python.exe')) {
+        foreach($p in @(Get-ChildItem (Join-Path $env:LOCALAPPDATA $pattern) -ErrorAction SilentlyContinue)){$paths.Add($p.FullName)}
+    }
     $py=Get-Command py.exe -ErrorAction SilentlyContinue
     if($py) {
         try {
@@ -135,16 +188,29 @@ function Find-Browser {
     }
     return $null
 }
+function Update-EnvironmentCards {
+    if(-not $script:RuntimeValue){return}
+    $state=$script:State
+    $good=[Drawing.ColorTranslator]::FromHtml('#71DFC5');$warn=[Drawing.ColorTranslator]::FromHtml('#F2C078')
+    if($state.Python){$script:RuntimeValue.Text='Python '+$state.Python.version;$script:RuntimeValue.ForeColor=$good}
+    else{$script:RuntimeValue.Text='需要安装';$script:RuntimeValue.ForeColor=$warn}
+    if($state.Python -and @($state.Python.missing).Count -eq 0){$script:PackagesValue.Text='全部就绪';$script:PackagesValue.ForeColor=$good}
+    else{$script:PackagesValue.Text='需要补齐';$script:PackagesValue.ForeColor=$warn}
+    if($state.Browser){$script:BrowserValue.Text=if([IO.Path]::GetFileName($state.Browser) -eq 'msedge.exe'){'Microsoft Edge'}else{'Google Chrome'};$script:BrowserValue.ForeColor=$good}
+    else{$script:BrowserValue.Text='请自行安装';$script:BrowserValue.ForeColor=$warn}
+}
+
 function Check-Environment {
     Set-Status '正在检查程序文件、Python、依赖和浏览器…'
-    foreach($name in @('帕琪工坊.py','帕琪工坊_智能详情页制作工具.html','patchi_samephoto.py','patchi_download_stable.py','requirements_套图.txt')) {
+    foreach($name in @('帕琪工坊.py','帕琪工坊_智能详情页制作工具.html','patchi_samephoto.py','patchi_download_stable.py','requirements_套图.txt','patchi_batch.py')) {
         if(-not(Test-Path -LiteralPath (Join-Path $AppDir $name) -PathType Leaf)){throw ('更新包缺少 '+$name+'，请完整解压后启动。')}
     }
     $python=Find-Python; $browser=Find-Browser
     $script:State=[pscustomobject]@{Python=$python;Browser=$browser}
+    Update-EnvironmentCards
     $items=@()
     if($python){$items+='Python '+$python.version+'（64 位）';if(@($python.missing).Count){$items+='缺少或版本不兼容：'+(@($python.missing)-join '、')}}
-    else{$items+='缺少可用的 64 位 Python 3.10～3.13（将下载 Python 3.12.10）'}
+    else{$items+='缺少可用的 64 位 Python 3.10 或更新版本（将下载 Python 3.12.10）'}
     if($browser){$items+='浏览器：'+[IO.Path]::GetFileName($browser)}else{$items+='缺少受支持浏览器：请自行安装桌面版 Edge 或 Chrome 120+，建议最新版。启动器不下载浏览器。'}
     Write-Log ($items -join [Environment]::NewLine)
     $missing=(-not $python) -or @($python.missing).Count -gt 0
@@ -217,7 +283,7 @@ function Install-Components {
     $r=Invoke-Child $venvExe @('-m','ensurepip','--upgrade') 120
     if($r.Code -ne 0){Write-Log($r.Out+$r.Err);throw '专用环境的 pip 无法修复，请重新检查或重新安装 Python。'}
     Set-Status '正在下载并安装 numpy、OpenCV、Pillow 和 Playwright（不下载浏览器）…'
-    $r=Invoke-Child $venvExe @('-m','pip','install','--disable-pip-version-check','--no-input','--only-binary=:all:','-r',(Join-Path $AppDir 'requirements_套图.txt')) 900
+    $r=Invoke-Child $venvExe @('-m','pip','install','--disable-pip-version-check','--no-input','--only-binary=:all:','-r',(Join-Path $AppDir 'requirements_套图.txt','patchi_batch.py')) 900
     Write-Log($r.Out+$r.Err)
     if($r.Code -ne 0){throw '依赖下载或安装失败。请检查网络，点击重新检查后重试；详情见 launcher.log。'}
     Check-Environment
@@ -273,21 +339,47 @@ try {
     $hash=[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($AppDir.ToLowerInvariant()))
     $mutex=New-Object Threading.Mutex($false,('Local\PatchiLauncher_'+[BitConverter]::ToString($hash).Replace('-','')))
     if(-not $mutex.WaitOne(0)) { [Windows.Forms.MessageBox]::Show('此目录的启动器已打开，请查看已有窗口。','帕琪工坊')|Out-Null;exit }
-    $script:Form=New-Object Windows.Forms.Form
-    $script:Form.Text='帕琪工坊 · 环境检查与启动'
-    $script:Form.ClientSize=New-Object Drawing.Size(760,520)
-    $script:Form.StartPosition='CenterScreen';$script:Form.MinimumSize=$script:Form.Size
-    $script:Form.Font=New-Object Drawing.Font('Microsoft YaHei UI',10)
-    $title=New-Object Windows.Forms.Label;$title.Text='帕琪工坊';$title.Font=New-Object Drawing.Font('Microsoft YaHei UI',20,[Drawing.FontStyle]::Bold);$title.SetBounds(24,18,710,45)
-    $script:Status=New-Object Windows.Forms.Label;$script:Status.Text='准备检查运行环境…';$script:Status.SetBounds(24,75,710,68)
-    $script:Progress=New-Object Windows.Forms.ProgressBar;$script:Progress.SetBounds(24,147,710,14)
-    $script:Details=New-Object Windows.Forms.TextBox;$script:Details.Multiline=$true;$script:Details.ReadOnly=$true;$script:Details.ScrollBars='Vertical';$script:Details.SetBounds(24,177,710,210);$script:Details.Anchor='Top,Bottom,Left,Right'
-    $script:Check=New-Object Windows.Forms.Button;$script:Check.Text='重新检查';$script:Check.SetBounds(24,407,125,42)
-    $script:Install=New-Object Windows.Forms.Button;$script:Install.Text='下载并安装缺少组件';$script:Install.SetBounds(162,407,245,42);$script:Install.Enabled=$false
-    $script:Launch=New-Object Windows.Forms.Button;$script:Launch.Text='打开工坊';$script:Launch.SetBounds(420,407,145,42);$script:Launch.Enabled=$false
-    $cancel=New-Object Windows.Forms.Button;$cancel.Text='取消 / 退出';$cancel.SetBounds(578,407,156,42)
-    $note=New-Object Windows.Forms.Label;$note.Text='Windows 10／11 64 位 · Python 官方下载 · 浏览器请自行安装 · 下载失败可重新检查后重试';$note.SetBounds(24,466,715,45)
-    $script:Form.Controls.AddRange(@($title,$script:Status,$script:Progress,$script:Details,$script:Check,$script:Install,$script:Launch,$cancel,$note))
+    $script:Form=New-Object PatchiUI.Window
+    $script:Form.Icon=[Drawing.Icon]::ExtractAssociatedIcon((Join-Path $AppDir '帕琪工坊启动器.exe'))
+    $script:Form.Text='帕琪工坊';$script:Form.ClientSize=New-Object Drawing.Size(880,660)
+    $script:Form.StartPosition='CenterScreen';$script:Form.FormBorderStyle='FixedSingle';$script:Form.MaximizeBox=$false
+    $script:Form.AutoScaleDimensions=New-Object Drawing.SizeF(96,96);$script:Form.AutoScaleMode='Dpi';$script:Form.Font=New-Object Drawing.Font('Microsoft YaHei UI',10)
+    $script:Form.BackColor=[Drawing.ColorTranslator]::FromHtml('#101521');$script:Form.ForeColor=[Drawing.ColorTranslator]::FromHtml('#ECF0FA')
+    function New-Text([string]$Text,[int]$X,[int]$Y,[int]$W,[int]$H,[int]$Size=10,[string]$Color='#99A8C2') {
+        $l=New-Object Windows.Forms.Label;$l.Text=$Text;$l.SetBounds($X,$Y,$W,$H);$l.BackColor=[Drawing.Color]::Transparent
+        $l.ForeColor=[Drawing.ColorTranslator]::FromHtml($Color);$l.Font=New-Object Drawing.Font('Microsoft YaHei UI',$Size);return $l
+    }
+    $brand=New-Text 'PATCHI ATELIER' 30 24 480 24 10 '#9F91FF'
+    $title=New-Text '让灵感，轻松成为作品。' 28 53 620 50 24 '#F4F5FE'
+    $subtitle=New-Text '帕琪工坊  /  智能详情页制作' 32 111 550 28 11
+    $badge=New-Text '● 本地运行' 736 38 120 30 10 '#71DFC5'
+    $cards=@()
+    foreach($spec in @(@('PYTHON','运行环境',30),@('COMPONENTS','运行组件',308),@('BROWSER','工作浏览器',586))) {
+        $card=New-Object PatchiUI.Card;$card.SetBounds([int]$spec[2],158,264,115)
+        $caption=New-Text $spec[0] 18 13 230 19 8 '#7D8DA9'
+        $label=New-Text $spec[1] 18 38 230 24 10 '#B5C1D6'
+        $value=New-Text '正在检查…' 18 69 230 29 13 '#E9EEFB'
+        $card.Controls.AddRange(@($caption,$label,$value));$cards+=$card
+        switch($spec[0]){'PYTHON'{$script:RuntimeValue=$value};'COMPONENTS'{$script:PackagesValue=$value};'BROWSER'{$script:BrowserValue=$value}}
+    }
+    $statusCard=New-Object PatchiUI.Card;$statusCard.SetBounds(30,292,820,86);$statusCard.Surface=[Drawing.ColorTranslator]::FromHtml('#22273B')
+    $script:Status=New-Text '正在为你准备工作环境…' 20 18 780 58 11 '#DEE5F5';$statusCard.Controls.Add($script:Status)
+    $script:Progress=New-Object Windows.Forms.ProgressBar;$script:Progress.SetBounds(30,388,820,5)
+    $logLabel=New-Text '运行记录' 32 410 300 22 9 '#8C9DB8'
+    $script:Details=New-Object Windows.Forms.TextBox;$script:Details.Multiline=$true;$script:Details.ReadOnly=$true;$script:Details.ScrollBars='Vertical'
+    $script:Details.SetBounds(30,440,820,108);$script:Details.BorderStyle='None';$script:Details.BackColor=$script:Form.BackColor
+    $script:Details.ForeColor=[Drawing.ColorTranslator]::FromHtml('#99A8C2');$script:Details.Font=New-Object Drawing.Font('Microsoft YaHei UI',9)
+    function New-Action([string]$Text,[int]$X,[int]$W,[string]$Color='#2C3346') {
+        $b=New-Object PatchiUI.ActionButton;$b.Text=$Text;$b.SetBounds($X,568,$W,46)
+        $b.Surface=[Drawing.ColorTranslator]::FromHtml($Color);$b.ForeColor=[Drawing.Color]::White;return $b
+    }
+    $script:Check=New-Action '重新检查' 30 130
+    $script:Install=New-Action '下载并安装缺少组件' 176 260 '#7564D7';$script:Install.Enabled=$false
+    $script:Launch=New-Action '进入工坊  →' 452 222 '#447F72';$script:Launch.Enabled=$false
+    $cancel=New-Action '取消 / 退出' 690 160
+    $note=New-Text '支持 Python 3.10+（含 3.14） · 已有高版本组件可直接使用 · 浏览器请自行安装' 32 628 820 22 8 '#6E809E'
+    $script:Form.Controls.AddRange(@($brand,$title,$subtitle,$badge,$statusCard,$script:Progress,$logLabel,$script:Details,$script:Check,$script:Install,$script:Launch,$cancel,$note))
+    $script:Form.Controls.AddRange($cards)
     $script:Check.Add_Click({Run-Action {Check-Environment}})
     $script:Install.Add_Click({Run-Action {Install-Components}})
     $script:Launch.Add_Click({Run-Action {Start-Workshop}})

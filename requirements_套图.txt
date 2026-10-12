@@ -1,4 +1,4 @@
-numpy>=1.24,<3
-opencv-python>=4.8,<5
-Pillow>=10,<13
-playwright>=1.40,<2
+numpy>=1.24
+opencv-python>=4.8
+Pillow>=10
+playwright>=1.40

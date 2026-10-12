@@ -1379,6 +1379,11 @@ window.DetailStudio={getState:()=>state,assetImageSrc,jobImageSrc,isLowResAsset,
 #patchiReplaceStudio .rs-progress>i{display:block;width:0;height:100%;background:#4b8a5b;transition:width .2s}
 @media(max-width:1050px){#patchiReplaceStudio{grid-template-columns:212px minmax(320px,1fr) 236px}#patchiReplaceStudio .rs-side,#patchiReplaceStudio .rs-inspector{padding:10px}}
 @media(max-width:700px){#patchiReplaceStudio{display:block;overflow:auto}#patchiReplaceStudio .rs-side,#patchiReplaceStudio .rs-inspector{height:auto;overflow:visible}#patchiReplaceStudio .rs-assets{grid-template-columns:repeat(4,minmax(0,1fr))}#patchiReplaceStudio .rs-work{overflow:visible}}
+#patchiReplaceStudio .rs-asset-shell{position:relative;min-width:0}
+#patchiReplaceStudio .rs-asset-shell .rs-asset{width:100%;cursor:pointer}
+#patchiReplaceStudio .rs-asset-delete{position:absolute;top:5px;right:5px;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;border:1px solid #e6d9d5;background:#fffffff0;color:#a24138;font-size:18px;line-height:1;box-shadow:0 1px 5px #243d2318}
+#patchiReplaceStudio .rs-asset-delete:hover{background:#ffe9e5;border-color:#c87369}
+#patchiReplaceStudio #rsStopBatch[hidden]{display:none}
 </style>
 <section id="patchiReplaceStudio" hidden aria-label="同源照片精确套详情图">
   <aside class="rs-side">
@@ -1401,14 +1406,14 @@ window.DetailStudio={getState:()=>state,assetImageSrc,jobImageSrc,isLowResAsset,
     <div class="rs-actions"><button class="rs-btn warn tiny" data-rs="reset">清空套图 · 下一款</button></div>
   </aside>
   <main class="rs-work">
-    <div class="rs-topbar"><button class="rs-btn" data-rs="close">← 返回详情页制作</button><b id="rsMainStatus">等待导入详情图</b><button class="rs-btn strong" data-rs="addDetails">＋ 详情图</button><button class="rs-btn" data-rs="saveProject">保存工程</button><button class="rs-btn" data-rs="loadProject">读取工程</button><button class="rs-btn strong" data-rs="exportZip">全部导出 ZIP</button></div>
+    <div class="rs-topbar"><button class="rs-btn" data-rs="close">← 返回详情页制作</button><b id="rsMainStatus">等待导入详情图</b><button class="rs-btn strong" data-rs="addDetails">＋ 详情图</button><button class="rs-btn" data-rs="saveProject">保存工程</button><button class="rs-btn" data-rs="loadProject">读取工程</button><button class="rs-btn strong" data-rs="batchApply" id="rsBatchApply">✦ 批量套图</button><button class="rs-btn warn" data-rs="stopBatch" id="rsStopBatch" hidden>停止批量</button><button class="rs-btn strong" data-rs="exportZip">全部导出 ZIP</button></div>
     <input class="rs-file" type="file" id="rsDetailFiles" accept="image/png,image/jpeg,image/webp" multiple>
     <input class="rs-file" type="file" id="rsProjectFiles" accept="application/json,.json">
     <div class="rs-scroller" id="rsPages"><div class="rs-empty">上传一组原始详情图（没有 Logo 的版本）<br>可以直接拖入图片或 Ctrl+V 粘贴</div></div>
   </main>
   <aside class="rs-inspector">
     <h2>套图工具</h2>
-    <div class="rs-status" id="rsMessage">添加素材和详情图，选中素材后点击对应衣服。</div><p class="rs-hint">自动适配一定色差和轻微姿势变化；明显不同视角或缺少共同特征时会停止套图。适配后请核对位置与边缘。</p>
+    <div class="rs-status" id="rsMessage">添加素材和详情图，选中素材后点击对应衣服。</div><p class="rs-hint">自动适配一定色差和轻微姿势变化。先用上方「批量套图」快速处理全部页面，再手动点击补充未识别的位置。适配后请核对位置与边缘。</p>
     <div class="rs-progress"><i id="rsProgressBar"></i></div>
     <h3>工作模式</h3>
     <div class="rs-modes">
@@ -1429,7 +1434,7 @@ window.DetailStudio={getState:()=>state,assetImageSrc,jobImageSrc,isLowResAsset,
 <script>
 (()=>{'use strict';
 const q=s=>document.querySelector(s), root=q('#patchiReplaceStudio');
-const rs={assets:[],pages:[],logos:[],selectedAsset:null,selectedPage:null,mode:'click',busy:false,drag:null};
+const rs={assets:[],pages:[],logos:[],selectedAsset:null,selectedPage:null,mode:'click',busy:false,batch:false,cancelBatch:false,drag:null};
 const uid=()=>String(Date.now())+'_'+Math.random().toString(36).slice(2,10);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const getPage=()=>rs.pages.find(p=>p.id===rs.selectedPage);
@@ -1472,7 +1477,8 @@ const enabledLogos=()=>rs.logos.filter(x=>x.checked).map(({id,name,src,area})=>(
 async function engineLogos(){const chosen=rs.logos.filter(x=>x.checked);return Promise.all(chosen.map(async l=>{if(!l.engineSrc){const img=l.img||await loadImage(l.src);const f=Math.min(1,850/Math.max(img.naturalWidth,img.naturalHeight));const c=makeCanvas(Math.max(1,Math.round(img.naturalWidth*f)),Math.max(1,Math.round(img.naturalHeight*f)));c.getContext('2d').drawImage(img,0,0,c.width,c.height);l.engineSrc=c.toDataURL('image/png')}return {id:l.id,name:l.name,area:l.area||'any',src:l.engineSrc}}))}
 
 
-function renderAssets(){q('#rsAssets').innerHTML=rs.assets.map(a=>`<button class="rs-asset ${a.id===rs.selectedAsset?'active':''}" data-asset="${a.id}" title="${esc(a.name)}"><img src="${a.src}" loading="lazy" alt=""><b>${esc(a.name)}</b></button>`).join('')||'<div class="rs-empty">尚未添加素材</div>'}
+function renderAssets(){q('#rsAssets').innerHTML=rs.assets.map(a=>`<div class="rs-asset-shell"><button class="rs-asset ${a.id===rs.selectedAsset?'active':''}" data-asset="${a.id}" title="${esc(a.name)}"><img src="${a.src}" loading="lazy" alt=""><b>${esc(a.name)}</b></button><button class="rs-asset-delete" data-delete-asset="${a.id}" aria-label="删除素材 ${esc(a.name)}" title="删除素材">×</button></div>`).join('')||'<div class="rs-empty">尚未添加素材</div>'}
+function removeAsset(id){if(rs.busy)return;const index=rs.assets.findIndex(a=>a.id===id);if(index<0)return;rs.assets.splice(index,1);if(rs.selectedAsset===id)rs.selectedAsset=rs.assets[Math.min(index,rs.assets.length-1)]?.id||null;renderAssets();msg('素材已删除，已套入的结果保留。')}
 function renderPages(){const box=q('#rsPages'),scroll=box.scrollTop;box.innerHTML=rs.pages.map((p,i)=>`<section class="rs-page ${p.id===rs.selectedPage?'active':''}" data-page="${p.id}"><div class="rs-pagehead"><b>${i+1}. ${esc(p.name)}</b><small class="rs-page-state">${p.edits.length} 个替换层</small><button class="rs-btn tiny" data-page-up="${p.id}" ${i===0?'disabled':''}>↑</button><button class="rs-btn tiny" data-page-down="${p.id}" ${i===rs.pages.length-1?'disabled':''}>↓</button><button class="rs-btn tiny" data-page-del="${p.id}">删除</button></div><canvas data-canvas="${p.id}" title="点击对应衣服套图"></canvas></section>`).join('')||'<div class="rs-empty">请上传一组未贴 Logo 的详情图片（也可拖拽到这里）</div>';rs.pages.forEach(updateCanvas);box.scrollTop=scroll;q('#rsMainStatus').textContent='详情图 '+rs.pages.length+' 张 · 原图尺寸导出'}
 function renderProperties(){const p=getPage(),box=q('#rsProperties');if(!p){box.innerHTML='<div class="rs-empty">请先选择页面</div>';return}box.innerHTML=(p.edits.map((e,i)=>`<div class="rs-edit"><span><b>${i+1}. ${esc(e.assetName)}</b><br>匹配 ${e.score}</span><button class="rs-btn tiny" data-remove-edit="${e.id}">移除</button></div>`).join('')||'<div class="rs-empty">本页未套入 Logo</div>')+`<p><b>${esc(p.status||'待处理')}</b></p><details><summary>本页匹配报告（${(p.report||[]).length}）</summary>${(p.report||[]).map(r=>`<p>${esc(r.asset)}：${esc(r.status)} ${r.score??''}<br>${esc(r.reason||'')}</p>`).join('')}</details><p>保护笔画：${p.protects.length} 条</p>`}
 async function importAssets(files){if(rs.busy)return;let done=0,errors=[];for(const f of Array.from(files||[])){if(!/\.(png|jpg|jpeg|webp)$/i.test(f.name)&&!/^image\/(png|jpeg|webp)$/.test(f.type)){errors.push(f.name);continue}try{const src=await readData(f),img=await loadImage(src);if(img.naturalHeight*img.naturalWidth>32000000)throw Error('超过3200万像素');rs.assets.push({id:uid(),src,img,name:f.name});done++}catch(e){errors.push(f.name+' '+e.message)}}if(done)rs.selectedAsset=rs.assets[rs.assets.length-done].id;renderAssets();msg('已加入 '+done+' 张已贴 Logo 的服装图。'+(errors.length?'未导入 '+errors.slice(0,2).join('、'):'选中素材后点击详情页上的对应衣服。'),!!errors.length)}
@@ -1481,6 +1487,49 @@ async function importLibrary(){const assets=window.DetailStudio?.getState?.()?.a
 async function askEngine(source,target,opts={}){if(location.protocol==='file:')throw Error('请用「帕琪工坊启动器.exe」启动本地编辑器；直接双击 HTML 无法使用配准。');const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),110000);try{const response=await fetch('/replace/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,target,hint:opts.hint||null,protections:opts.protections||[]}),signal:ctrl.signal});let data;try{data=await response.json()}catch(_){throw Error('本地助手没有正常返回 JSON，请检查终端日志')}if(!response.ok)throw Error(data.error||'本机服务错误 HTTP '+response.status);return data}finally{clearTimeout(timer)}}
 async function addEdit(page,asset,result){const img=await loadImage(result.overlay);if(page.img.naturalWidth!==img.naturalWidth||page.img.naturalHeight!==img.naturalHeight)throw Error('返回透明图尺寸不正确');const edit={id:uid(),assetId:asset.id,assetName:asset.name,src:result.overlay,img,score:result.score,method:result.method,pixels:result.pixels,regions:result.regions,bounds:result.bounds,warnings:result.warnings||[]};page.edits.push(edit);page.status=result.reviewRequired?'已替换 · 需复核':'已替换';updateCanvas(page);renderProperties()}
 async function applyOne(page,asset,opts={}){if(rs.busy)return;rs.busy=true;progress(12);msg('正在匹配衣料特征并适配色差与轻微姿势变化…');try{const result=await askEngine(asset.src,page.src,{...opts,protections:[]});progress(85);if(result.pixels===0){msg('匹配成功，该位置没有可见 Logo 变化。');progress(100);return}await addEdit(page,asset,result);page.report=[...(page.report||[]),{asset:asset.name,status:'已替换',score:result.score,reason:(result.warnings||[]).join('；')}];msg(`✓ 已替换 ${asset.name}\n匹配 ${result.score}\n${(result.warnings||[]).join('\n')}`);progress(100)}catch(e){page.status='待处理';page.report=[...(page.report||[]),{asset:asset.name,status:'失败',reason:e.message}];msg('未执行覆盖：'+(e.name==='AbortError'?'匹配超时，请重试或换一处可见衣料位置':e.message),true);progress(0)}finally{rs.busy=false;updateCanvas(page);renderProperties()}}
+async function batchRequest(action,body,timeout=35000){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);try{const response=await fetch('/replace/batch/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal});const data=await response.json();if(!response.ok)throw Error(data.error||'批量服务错误');return data}catch(e){if(e.name==='AbortError')throw Error('这一步超时，已留待手动补充');throw e}finally{clearTimeout(timer)}}
+async function batchApply(){
+ if(rs.busy)return;if(!rs.assets.length||!rs.pages.length)return msg('请先添加服装素材和详情图',true);
+ const assets=[...rs.assets],pages=[...rs.pages],sources=new Map(),targets=new Map();let token=null,visited=0,added=0,skipped=0,total=pages.length*assets.length;
+ rs.busy=true;rs.batch=true;rs.cancelBatch=false;q('#rsBatchApply').disabled=true;q('#rsStopBatch').hidden=false;progress(0);
+ try{
+  const started=await batchRequest('start',{});token=started.session;
+  let ready=0;const count=assets.length+pages.length;
+  for(const [kind,items,store] of [['source',assets,sources],['target',pages,targets]]){
+   for(const item of items){if(rs.cancelBatch)break;msg(`批量准备 ${ready+1}/${count}：${item.name}\n正在提取特征，后续页面会复用。`);let data;
+    try{data=await batchRequest('prepare',{session:token,kind,image:item.src});store.set(item.id,data)}catch(e){store.set(item.id,{usable:false,reason:e.message})}
+    ready++;progress(ready/count*18);
+   }
+   if(rs.cancelBatch)break;
+  }
+  for(let i=0;i<pages.length&&!rs.cancelBatch;i++){
+   const page=pages[i];let pageAdded=0;
+   for(let j=0;j<assets.length&&!rs.cancelBatch;j++){
+    const asset=assets[j],source=sources.get(asset.id),target=targets.get(page.id);visited++;
+    let status='跳过',reason='',score;
+    if((page.edits||[]).some(edit=>edit.assetId===asset.id)){reason='本页已套入此素材，避免重复叠加';skipped++}
+    else if(!source?.usable||!target?.usable){reason=source?.reason||target?.reason||'未准备完成';skipped++}
+    else{
+     msg(`批量套图 · 第 ${i+1}/${pages.length} 页 · 素材 ${j+1}/${assets.length}\n${asset.name} → ${page.name}\n已新增 ${added} 处；不确定的匹配自动跳过。`);
+     try{
+      const result=await batchRequest('match',{session:token,sourceId:source.imageId,targetId:target.imageId,protections:page.protects||[]});
+      for(const edit of result.results||[]){await addEdit(page,asset,edit);added++;pageAdded++;score=edit.score}
+      if(result.results?.length){status='批量已套入';reason=`新增 ${result.results.length} 处 · 快速识别 ${result.recognitionMs}ms`}
+      else{reason=result.reason||'未快速匹配，可手动补充';skipped++}
+     }catch(e){reason=e.message;skipped++}
+    }
+    page.report=[...(page.report||[]),{asset:asset.name,status,score,reason}];progress(18+visited/total*82);
+    if(visited%16===0)await new Promise(resolve=>setTimeout(resolve,0));
+   }
+   page.status=pageAdded?'批量已套入 · 请复核':page.edits.length?(page.status||'已套入'):'未自动匹配 · 可手动补充';updateCanvas(page);
+  }
+  msg(`${rs.cancelBatch?'批量已停止':'✓ 批量套图完成'}：检查 ${visited}/${total} 个组合，新增 ${added} 处套图。\n未匹配的位置可选中素材后手动点击补充；已完成结果可以撤销或保留。`);
+ }catch(e){msg('批量套图中断：'+e.message+'；已完成结果已保留，可继续手动补充。',true)}
+ finally{
+  if(token){try{await batchRequest('close',{session:token},10000)}catch(_){}}
+  rs.busy=false;rs.batch=false;rs.cancelBatch=false;q('#rsBatchApply').disabled=false;q('#rsStopBatch').hidden=true;progress(100);renderProperties();
+ }
+}
 function reportText(){return '帕琪工坊套图报告\n'+new Date().toLocaleString()+'\n未处理页按原图导出。\n\n'+rs.pages.map((p,i)=>`${i+1}. ${p.name} — ${p.status||(p.edits.length?'有替换结果':'待处理')}\n替换层：${p.edits.length}\n`+(p.report||[]).map(r=>`  ${r.asset}: ${r.status} ${r.score??''} ${r.reason||''}`).join('\n')).join('\n\n')}
 function pointerDown(e){const canvas=e.target.closest('canvas[data-canvas]');if(!canvas||rs.busy)return;const page=rs.pages.find(p=>p.id===canvas.dataset.canvas);if(!page)return;rs.selectedPage=page.id;const pt=pagePt(e,canvas);rs.pages.forEach(updateCanvas);renderProperties();if(rs.mode==='view')return;if(rs.mode==='click'){const asset=getAsset();if(!asset)return msg('请先选择左侧一张已贴 Logo 的服装图。',true);return applyOne(page,asset,{hint:pt})}rs.drag={pageId:page.id,mode:rs.mode,start:pt,end:pt};if(rs.mode==='protect'){const size=+q('#rsBrush').value;const stroke={size,points:[pt]};page.protects.push(stroke);rs.drag.stroke=stroke}canvas.setPointerCapture(e.pointerId);updateCanvas(page)}
 function pointerMove(e){if(!rs.drag)return;const canvas=e.target.closest('canvas[data-canvas]');if(!canvas||canvas.dataset.canvas!==rs.drag.pageId)return;const pt=pagePt(e,canvas),page=rs.pages.find(p=>p.id===rs.drag.pageId);rs.drag.end=pt;if(rs.drag.mode==='protect')rs.drag.stroke.points.push(pt);updateCanvas(page)}
@@ -1491,14 +1540,14 @@ async function exportOne(){const p=getPage();if(!p)return msg('请选择一张�
 async function exportZip(){if(!rs.pages.length)return msg('没有详情图可以导出',true);if(rs.busy)return;rs.busy=true;try{const all=[],counts=new Map(),used=new Set();for(let i=0;i<rs.pages.length;i++){progress((i+1)/rs.pages.length*98);const p=rs.pages[i],{blob,name}=await exportImage(p);const key=name.toLocaleLowerCase();const count=(counts.get(key)||0)+1;counts.set(key,count);let path=name;if(used.has(key)){let folder=count;do{path='同名文件/'+folder+'/'+name;folder++}while(used.has(path.toLocaleLowerCase()))}used.add(path.toLocaleLowerCase());all.push({name:path,bytes:new Uint8Array(await blob.arrayBuffer())})}all.push({name:'套图报告/处理报告.txt',bytes:new TextEncoder().encode(reportText())});const zip=window.DetailStudio?.makeZip?.(all);if(!zip)throw Error('原编辑器 ZIP 打包组件未加载');download(zip,'帕琪工坊_套详情图.zip');msg('✓ 已导出 '+rs.pages.length+' 张原尺寸图片；文件名保持原名。同名文件分目录保存，报告放在套图报告目录。')}catch(e){msg('导出失败：'+e.message,true)}finally{rs.busy=false;progress(100)}}
 async function saveProject(){const data={format:'patchi-samephoto-studio',version:4,selectedPage:rs.selectedPage,assets:rs.assets.map(({id,name,src})=>({id,name,src})),pages:rs.pages.map(({id,name,src,edits,protects,box,status,report})=>({id,name,src,edits:edits.map(({id,assetId,assetName,src,score,method,pixels,regions,bounds,warnings})=>({id,assetId,assetName,src,score,method,pixels,regions,bounds,warnings})),protects,box,status,report}))};download(new Blob([JSON.stringify(data)],{type:'application/json;charset=utf-8'}),'帕琪工坊_套详情图工程.json');msg('已保存工程（含原图、完整替换层、保护笔画与逐页报告）。')}
 async function openProject(file){if(rs.busy)return;try{const data=JSON.parse(await file.text());if(!['patchi-samephoto-studio','patchi-garment-replace'].includes(data.format)||!Array.isArray(data.assets)||!Array.isArray(data.pages))throw Error('不是帕琪工坊套详情图工程');if(data.assets.length>300||data.pages.length>200)throw Error('工程数据数量异常');if((rs.pages.length||rs.assets.length)&&!confirm('用工程内容替换当前套图面板？不会影响工坊其他模块。'))return;const old=data.format==='patchi-garment-replace';const assets=[];for(const a of data.assets){assets.push({...a,img:await loadImage(a.src)})}const pages=[];for(const p of data.pages){const edits=[];if(!old)for(const e of p.edits||[])edits.push({...e,img:await loadImage(e.src)});pages.push({id:p.id,name:p.name,src:p.src,img:await loadImage(p.src),edits,status:p.status||(edits.length?'旧结果 · 需复核':'待处理'),report:p.report||[],protects:old?[]:(p.protects||[]),box:null})}rs.assets=assets;rs.pages=pages;rs.selectedPage=pages.some(p=>p.id===data.selectedPage)?data.selectedPage:(pages[0]?.id||null);rs.selectedAsset=assets[0]?.id||null;renderAssets();renderPages();renderProperties();msg(old?'已读取旧版工程的源图与素材；旧版整衣覆盖数据已跳过，请按新精确算法重新套图。':'工程已打开，替换层和保护笔画已恢复。',old)}catch(e){msg('无法打开工程：'+e.message,true)}}
-function action(kind){if(rs.busy&&kind!=='close')return msg('正在处理，请稍候。',true);if(kind==='report')return download(new Blob([reportText()],{type:'text/plain;charset=utf-8'}),'套图处理报告.txt');if(kind==='close'){if(rs.busy)return msg('正在处理，请等任务完成再返回',true);root.hidden=true;document.body.classList.remove('patchi-studio-open');document.querySelectorAll('body>.top,body>.layout').forEach(el=>el.inert=false);document.body.style.overflow='';return}if(kind==='addDetails')return q('#rsDetailFiles').click();if(kind==='importLibrary')return importLibrary();if(kind==='uncheckLogos')return uncheckLogos();if(kind==='unselect'){rs.selectedAsset=null;renderAssets();return}if(kind==='saveProject')return saveProject();if(kind==='loadProject')return q('#rsProjectFiles').click();if(kind==='exportOne')return exportOne();if(kind==='exportZip')return exportZip();const page=getPage();if(kind==='reset'){if(rs.busy||!confirm('清空本款服装素材与详情图？长期 Logo 库及勾选状态会原样保留。'))return;rs.pages=[];rs.assets=[];rs.selectedPage=null;rs.selectedAsset=null;renderAssets();renderPages();renderProperties();return msg('本款素材和详情图已清空；Logo 库及勾选状态均保留，可直接开始下一款。')}if(!page)return msg('请先选择一张详情图',true);if(kind==='undo'){if(page.edits.pop()){page.status=page.edits.length?'有替换结果 · 需复核':'待处理';updateCanvas(page);renderProperties();msg('已撤销本页最后一个印花迁移，恢复之前的效果。')}return}if(kind==='undoProtect'){page.protects.pop();updateCanvas(page);renderProperties();return}if(kind==='clearPage'){if(!confirm('恢复当前页面原图？清除本页套图和保护笔画。'))return;page.edits=[];page.protects=[];page.box=null;page.status='待处理';page.report=[];updateCanvas(page);renderProperties();return msg('本页已恢复原始图片。')}}
+function action(kind){if(kind==='stopBatch'){if(rs.batch){rs.cancelBatch=true;msg('正在停止批量，当前一步完成后结束；已完成结果保留。')}return}if(kind==='batchApply')return batchApply();if(rs.busy&&kind!=='close')return msg('正在处理，请稍候。',true);if(kind==='report')return download(new Blob([reportText()],{type:'text/plain;charset=utf-8'}),'套图处理报告.txt');if(kind==='close'){if(rs.busy)return msg('正在处理，请等任务完成再返回',true);root.hidden=true;document.body.classList.remove('patchi-studio-open');document.querySelectorAll('body>.top,body>.layout').forEach(el=>el.inert=false);document.body.style.overflow='';return}if(kind==='addDetails')return q('#rsDetailFiles').click();if(kind==='importLibrary')return importLibrary();if(kind==='uncheckLogos')return uncheckLogos();if(kind==='unselect'){rs.selectedAsset=null;renderAssets();return}if(kind==='saveProject')return saveProject();if(kind==='loadProject')return q('#rsProjectFiles').click();if(kind==='exportOne')return exportOne();if(kind==='exportZip')return exportZip();const page=getPage();if(kind==='reset'){if(rs.busy||!confirm('清空本款服装素材与详情图？长期 Logo 库及勾选状态会原样保留。'))return;rs.pages=[];rs.assets=[];rs.selectedPage=null;rs.selectedAsset=null;renderAssets();renderPages();renderProperties();return msg('本款素材和详情图已清空；Logo 库及勾选状态均保留，可直接开始下一款。')}if(!page)return msg('请先选择一张详情图',true);if(kind==='undo'){if(page.edits.pop()){page.status=page.edits.length?'有替换结果 · 需复核':'待处理';updateCanvas(page);renderProperties();msg('已撤销本页最后一个印花迁移，恢复之前的效果。')}return}if(kind==='undoProtect'){page.protects.pop();updateCanvas(page);renderProperties();return}if(kind==='clearPage'){if(!confirm('恢复当前页面原图？清除本页套图和保护笔画。'))return;page.edits=[];page.protects=[];page.box=null;page.status='待处理';page.report=[];updateCanvas(page);renderProperties();return msg('本页已恢复原始图片。')}}
 
 q('#rsAssetFiles').addEventListener('change',e=>{importAssets(e.target.files);e.target.value=''});
 q('#rsDetailFiles').addEventListener('change',e=>{importPages(e.target.files);e.target.value=''});
 q('#rsLogoFiles').addEventListener('change',e=>{importLogos(e.target.files);e.target.value=''});
 root.addEventListener('change',e=>{const id=e.target.dataset?.logoCheck;if(id)return checkLogo(id,e.target.checked);const area=e.target.dataset?.logoArea;if(area)return changeLogoArea(area,e.target.value)});
 q('#rsProjectFiles').addEventListener('change',e=>{if(e.target.files[0])openProject(e.target.files[0]);e.target.value=''});
-root.addEventListener('click',e=>{const actionBtn=e.target.closest('[data-rs]');if(actionBtn)return action(actionBtn.dataset.rs);if(rs.busy)return;const assetBtn=e.target.closest('[data-asset]');if(assetBtn){rs.selectedAsset=assetBtn.dataset.asset;renderAssets();showMode('click');return msg('已选中：'+getAsset().name+'。点击详情图中未被遮住的对应衣料位置。')}const ld=e.target.closest('[data-logo-delete]');if(ld)return removeLogo(ld.dataset.logoDelete);const modeBtn=e.target.closest('[data-mode]');if(modeBtn){showMode(modeBtn.dataset.mode);return}const rem=e.target.closest('[data-remove-edit]');if(rem){const p=getPage();p.edits=p.edits.filter(t=>t.id!==rem.dataset.removeEdit);p.status=p.edits.length?'有替换结果 · 需复核':'待处理';updateCanvas(p);renderProperties();return}const up=e.target.closest('[data-page-up]'),down=e.target.closest('[data-page-down]'),del=e.target.closest('[data-page-del]');if(up)return movePage(up.dataset.pageUp,-1);if(down)return movePage(down.dataset.pageDown,1);if(del){if(!confirm('从套图面板移除这张详情图？'))return;rs.pages=rs.pages.filter(p=>p.id!==del.dataset.pageDel);if(rs.selectedPage===del.dataset.pageDel)rs.selectedPage=rs.pages[0]?.id||null;renderPages();renderProperties()}});
+root.addEventListener('click',e=>{const actionBtn=e.target.closest('[data-rs]');if(actionBtn)return action(actionBtn.dataset.rs);if(rs.busy)return;const deleteAsset=e.target.closest('[data-delete-asset]');if(deleteAsset)return removeAsset(deleteAsset.dataset.deleteAsset);const assetBtn=e.target.closest('[data-asset]');if(assetBtn){rs.selectedAsset=assetBtn.dataset.asset;renderAssets();showMode('click');return msg('已选中：'+getAsset().name+'。点击详情图中未被遮住的对应衣料位置。')}const ld=e.target.closest('[data-logo-delete]');if(ld)return removeLogo(ld.dataset.logoDelete);const modeBtn=e.target.closest('[data-mode]');if(modeBtn){showMode(modeBtn.dataset.mode);return}const rem=e.target.closest('[data-remove-edit]');if(rem){const p=getPage();p.edits=p.edits.filter(t=>t.id!==rem.dataset.removeEdit);p.status=p.edits.length?'有替换结果 · 需复核':'待处理';updateCanvas(p);renderProperties();return}const up=e.target.closest('[data-page-up]'),down=e.target.closest('[data-page-down]'),del=e.target.closest('[data-page-del]');if(up)return movePage(up.dataset.pageUp,-1);if(down)return movePage(down.dataset.pageDown,1);if(del){if(!confirm('从套图面板移除这张详情图？'))return;rs.pages=rs.pages.filter(p=>p.id!==del.dataset.pageDel);if(rs.selectedPage===del.dataset.pageDel)rs.selectedPage=rs.pages[0]?.id||null;renderPages();renderProperties()}});
 root.querySelector('#rsPages').addEventListener('pointerdown',pointerDown);
 root.querySelector('#rsPages').addEventListener('pointermove',pointerMove);
 root.querySelector('#rsPages').addEventListener('pointerup',pointerUp);
@@ -1513,7 +1562,7 @@ window.addEventListener('keydown',e=>{if(e.key==='Escape'&&!root.hidden&&!rs.bus
 function showStudio(){root.hidden=false;document.body.classList.add('patchi-studio-open');document.body.style.overflow='hidden';document.querySelectorAll('body>.top,body>.layout').forEach(el=>el.inert=true);renderAssets();renderLogos();renderPages();renderProperties()}
 document.addEventListener('click',e=>{if(e.target.closest('[data-patchi-open]'))showStudio()});
 restoreLogos();
-window.PatchiReplaceStudio={open:showStudio,close:()=>action('close'),importAssets,importPages,importLogos,exportCanvas,getState:()=>rs,redraw:()=>rs.pages.forEach(updateCanvas)};
+window.PatchiReplaceStudio={open:showStudio,close:()=>action('close'),importAssets,importPages,importLogos,exportCanvas,batchApply,removeAsset,getState:()=>rs,redraw:()=>rs.pages.forEach(updateCanvas)};
 })();
 </script>
 
@@ -1527,7 +1576,7 @@ body.patchi-studio-open>.top,body.patchi-studio-open>.layout{display:none!import
 <dialog id="patchiTutorial" aria-labelledby="patchiTutorialTitle">
  <div class="tutorial-head"><h2 id="patchiTutorialTitle">使用教程</h2><button class="btn" type="button" data-patchi-help-close>关闭</button></div>
  <h3>制作详情页</h3><ol><li>在「素材」添加图片，在「模板」选择版式。</li><li>点击页面中的图片框选择素材，拖动图片调整位置，在右侧修改文字和尺寸。</li><li>点击「保存工程」保留进度；完成后按原文件名导出当前图片或全部 ZIP；可选择无损 PNG。</li></ol>
- <h3>套详情图</h3><ol><li>点击「套详情图」，添加已贴好 Logo 的透明 PNG 和未贴标的详情图。优先用同一张原照片；允许一定色差和轻微姿势差异，以共同衣料特征确认位置。</li><li>选中左侧服装素材，点击详情图中对应的可见衣料。衣服部分被其他衣服遮住时，点击未被遮住的位置，程序会保留前景遮挡。</li><li>切换「看原图」检查效果。需要补充保留文字、手部等区域时，使用「保留原图画笔」涂抹。</li><li>出错可撤销套图或恢复原图。按原文件名导出当前图片或全部 ZIP；可选择无损 PNG，点击「返回详情页制作」回到原页面。</li></ol>
+ <h3>套详情图</h3><ol><li>点击「套详情图」，添加已贴好 Logo 的透明 PNG 和未贴标的详情图。优先用同一张原照片；允许一定色差和轻微姿势差异，以共同衣料特征确认位置。</li><li>可先点击上方「批量套图」，自动遍历所有素材和页面；可靠位置会先套好，其他位置留待手动补充。素材右上角 × 可删除不需要的图。</li><li>选中左侧服装素材，点击详情图中对应的可见衣料。衣服部分被其他衣服遮住时，点击未被遮住的位置，程序会保留前景遮挡。</li><li>切换「看原图」检查效果。需要补充保留文字、手部等区域时，使用「保留原图画笔」涂抹。</li><li>出错可撤销套图或恢复原图。按原文件名导出当前图片或全部 ZIP；可选择无损 PNG，点击「返回详情页制作」回到原页面。</li></ol>
  <p>Logo 收藏库用于保存参考图；实际套图使用已贴好 Logo 的服装素材。完全被遮住的 Logo 不会覆盖到前景物体上。</p>
  <h3>AI 抠图</h3><ol><li>从素材库勾选图片加入队列，或选择电脑文件。选中的照片会发送到抠抠图服务。</li><li>首次使用免费自动模式时，点击「打开登录窗口」，在网站正常登录，再点击「完成登录并保存」。</li><li>点击「启动免费网站自动抠图」。透明 PNG 验证通过后自动回填，原有页面引用和位置保留。</li><li>失败时查看网页截图，确认登录、验证码和下载权限后重试。也可选「手动回收」，按导出原图、网站抠图、导入透明 PNG 的顺序操作。</li></ol>
  <p>官方 API 模式需要抠抠图密钥，费用按账号规则计算。结果须有真实透明区域，且分辨率不低于输入原图。</p>
