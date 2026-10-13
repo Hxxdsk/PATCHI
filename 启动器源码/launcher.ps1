@@ -1,5 +1,18 @@
-﻿﻿param([Parameter(Mandatory=$true)][string]$AppDir)
+﻿param([Parameter(Mandatory=$true)][string]$AppDir)
 $ErrorActionPreference = 'Stop'
+# Early failures must return a nonzero code to the native bootstrap, even before WinForms loads.
+trap {
+    try {
+        $text=$_.Exception.Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage
+        [IO.File]::WriteAllText((Join-Path $AppDir '.runtime\launcher.failure.txt'),$text,(New-Object Text.UTF8Encoding($false)))
+    } catch {}
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [IO.File]::WriteAllText((Join-Path $AppDir '.runtime\launcher.ready'),'startup-error')
+        [Windows.Forms.MessageBox]::Show($text,'帕琪工坊启动失败')|Out-Null
+    } catch {}
+    exit 1
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Net.Http
@@ -57,7 +70,7 @@ $script:Log = Join-Path $script:Runtime 'launcher.log'
 $script:Busy = $false
 $script:StopRequested = $false
 $script:State = $null
-$Version = '2026.10.13.6'
+$Version = '2026.10.13.7'
 $PythonUrl = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe'
 $PythonSha = '67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb'
 $Probe = @'
@@ -387,7 +400,7 @@ try {
     $script:Form.Add_FormClosing({param($sender,$e) if($script:Busy -and $script:Form.Tag -ne 'success'){$script:StopRequested=$true;$script:Form.Tag='close';$e.Cancel=$true}})
     $timer=New-Object Windows.Forms.Timer;$timer.Interval=200
     $timer.Add_Tick({$timer.Stop();Run-Action {Check-Environment}})
-    $script:Form.Add_Shown({$timer.Start()})
+    $script:Form.Add_Shown({[IO.File]::WriteAllText((Join-Path $script:Runtime 'launcher.ready'),$Version,(New-Object Text.UTF8Encoding($false)));$timer.Start()})
     [Windows.Forms.Application]::Run($script:Form)
     $mutex.ReleaseMutex();$mutex.Dispose()
-} catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message,'帕琪工坊启动失败')|Out-Null }
+} catch { throw }

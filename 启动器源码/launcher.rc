@@ -3,8 +3,8 @@
 1 24 "launcher.manifest"
 102 ICON "patchi.ico"
 1 VERSIONINFO
-FILEVERSION 2026,10,13,6
-PRODUCTVERSION 2026,10,13,6
+FILEVERSION 2026,10,13,7
+PRODUCTVERSION 2026,10,13,7
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004
@@ -16,8 +16,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "Patchi Workshop Launcher\0"
       VALUE "ProductName", "Patchi Workshop\0"
-      VALUE "FileVersion", "2026.10.13.6\0"
-      VALUE "ProductVersion", "2026.10.13.6\0"
+      VALUE "FileVersion", "2026.10.13.7\0"
+      VALUE "ProductVersion", "2026.10.13.7\0"
       VALUE "OriginalFilename", "PatchiLauncher.exe\0"
     END
   END
