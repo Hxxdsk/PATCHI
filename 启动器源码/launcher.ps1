@@ -1,4 +1,4 @@
-﻿param([Parameter(Mandatory=$true)][string]$AppDir)
+﻿﻿param([Parameter(Mandatory=$true)][string]$AppDir)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -57,7 +57,7 @@ $script:Log = Join-Path $script:Runtime 'launcher.log'
 $script:Busy = $false
 $script:StopRequested = $false
 $script:State = $null
-$Version = '2026.10.12.5'
+$Version = '2026.10.13.6'
 $PythonUrl = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe'
 $PythonSha = '67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb'
 $Probe = @'
@@ -202,7 +202,7 @@ function Update-EnvironmentCards {
 
 function Check-Environment {
     Set-Status '正在检查程序文件、Python、依赖和浏览器…'
-    foreach($name in @('帕琪工坊.py','帕琪工坊_智能详情页制作工具.html','patchi_samephoto.py','patchi_download_stable.py','requirements_套图.txt','patchi_batch.py','patchi_pose.py')) {
+    foreach($name in @('帕琪工坊.py','帕琪工坊_智能详情页制作工具.html','patchi_samephoto.py','patchi_download_stable.py','requirements_套图.txt','patchi_batch.py','patchi_mainphoto.py')) {
         if(-not(Test-Path -LiteralPath (Join-Path $AppDir $name) -PathType Leaf)){throw ('更新包缺少 '+$name+'，请完整解压后启动。')}
     }
     $python=Find-Python; $browser=Find-Browser
@@ -283,7 +283,7 @@ function Install-Components {
     $r=Invoke-Child $venvExe @('-m','ensurepip','--upgrade') 120
     if($r.Code -ne 0){Write-Log($r.Out+$r.Err);throw '专用环境的 pip 无法修复，请重新检查或重新安装 Python。'}
     Set-Status '正在下载并安装 numpy、OpenCV、Pillow 和 Playwright（不下载浏览器）…'
-    $r=Invoke-Child $venvExe @('-m','pip','install','--disable-pip-version-check','--no-input','--only-binary=:all:','-r',(Join-Path $AppDir 'requirements_套图.txt','patchi_batch.py','patchi_pose.py')) 900
+    $r=Invoke-Child $venvExe @('-m','pip','install','--disable-pip-version-check','--no-input','--only-binary=:all:','-r',(Join-Path $AppDir 'requirements_套图.txt')) 900
     Write-Log($r.Out+$r.Err)
     if($r.Code -ne 0){throw '依赖下载或安装失败。请检查网络，点击重新检查后重试；详情见 launcher.log。'}
     Check-Environment

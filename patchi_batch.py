@@ -15,7 +15,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import patchi_samephoto as engine
-import patchi_pose as pose
 
 PAIR_SECONDS = 1.8  # A soft recognition budget; final original-size rendering is separate.
 MAX_INSTANCES = 2
@@ -32,11 +31,6 @@ class Prepared:
     to_original: np.ndarray
     points: np.ndarray
     descriptors: object
-    pose_logos: object = None
-    pose_profiles: object = None
-    opaque: bool = False
-    explicit_boxes: bool = False
-    pose_only: bool = False
 
 
 class Session:
@@ -98,19 +92,9 @@ def prepare(payload):
     with session.lock:
         if len(session.records) >= 500: raise ValueError('本次图片数量超过 500 张')
         image = engine._decode(payload.get('image'))
-        opaque=source and np.mean(image[:,:,3]<250)<=.005
-        pose_logos=None
-        if source:
-            try:pose_logos=pose.extract_logos(image,payload.get('sourceLogoBoxes'))
-            except ValueError:pass
-        if opaque:
-            try:image=pose.cut_flat_background(image)
-            except ValueError:
-                return {'ok':True,'usable':False,'reason':'背景不够干净，请使用透明图或手动标记并校准'}
-        small, outer_scale = engine._work_size(image, 1000)
-        try:pose_profiles=pose.profiles(small)
-        except ValueError:pose_profiles=[]
-        for profile in pose_profiles:profile.scale*=outer_scale
+        if source and np.mean(image[:,:,3] < 250) <= .005:
+            return {'ok': True, 'usable': False, 'reason': '素材没有透明背景，请手动检查'}
+        small, _ = engine._work_size(image, 1000)
         h, w = image.shape[:2]; sh, sw = small.shape[:2]
         sx, sy = sw/w, sh/h
         to_original = np.array([[1/sx,0,.5/sx-.5], [0,1/sy,.5/sy-.5], [0,0,1.]])
@@ -120,22 +104,21 @@ def prepare(payload):
         detector = cv2.SIFT_create(nfeatures=2000,contrastThreshold=.012,edgeThreshold=16)
         points, descriptors = detector.detectAndCompute(gray, mask)
         xy = np.array([p.pt for p in points],dtype=np.float32).reshape(-1,2)
-        if source and (descriptors is None or len(xy)<12) and not pose_logos:
-            return {'ok': True, 'usable': False, 'reason': '可靠纹理不足；标记素材 Logo 或留待手动校准'}
+        if descriptors is None or len(xy)<12:
+            return {'ok': True, 'usable': False, 'reason': '可靠纹理不足，留待手动点击匹配'}
         key = secrets.token_hex(12)
         path = session.directory/(key+'.image')
         # Store actual uploaded bytes, not an encoded/downsized replacement.
         path.write_bytes(base64.b64decode(payload['image'].split(',',1)[1],validate=True))
         thumb = session.directory/(key+'.png')
         if not cv2.imwrite(str(thumb),small,[cv2.IMWRITE_PNG_COMPRESSION,1]): raise ValueError('无法写入批量缓存')
-        session.records[key] = Prepared(path,thumb,source,(h,w),to_original,xy,descriptors,pose_logos,pose_profiles,opaque,bool(payload.get('sourceLogoBoxes')),payload.get('mode')=='pose')
+        session.records[key] = Prepared(path,thumb,source,(h,w),to_original,xy,descriptors)
         session.cache[key] = small
         while len(session.cache)>CACHE_IMAGES: session.cache.popitem(last=False)
         return {'ok': True, 'usable': True, 'imageId': key, 'features': len(xy)}
 
 
 def _candidates(source, target, deadline):
-    if source.descriptors is None or target.descriptors is None or len(source.points)<12 or len(target.points)<12:return []
     pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(target.descriptors,source.descriptors,k=2)
     good = [m for pair in pairs if len(pair)==2 for m,n in [pair] if m.distance<.73*n.distance]
     if len(good)<14: return []
@@ -169,23 +152,6 @@ def _read_original(record):
     return engine._decode(data)
 
 
-def _pose_pair_valid(a,b):
-    try:pose._verify(a,b);return True
-    except ValueError:return False
-
-
-def _pose_unique_source(session,key,source,target_profile):
-    ranks=[]
-    for other_key,record in session.records.items():
-        if not record.source or not record.pose_logos or not record.pose_profiles:continue
-        try:_,score=pose._verify(record.pose_profiles[0],target_profile)
-        except ValueError:continue
-        ranks.append((score,other_key))
-    ranks.sort(reverse=True)
-    if not ranks or ranks[0][1]!=key:return False
-    return len(ranks)==1 or ranks[0][0]-ranks[1][0]>=7.
-
-
 def match(payload):
     session=_get(payload.get('session'))
     with session.lock:
@@ -194,7 +160,7 @@ def match(payload):
         if a is None or b is None or not a.source or b.source: raise ValueError('批量图片引用已失效')
         started=time.monotonic();deadline=started+PAIR_SECONDS
         src,dst=session.thumbnail(source_id),session.thumbnail(target_id)
-        groups=[] if a.pose_only else _candidates(a,b,deadline)
+        groups=_candidates(a,b,deadline)
         chosen=[]
         for group in groups:
             best=None
@@ -210,17 +176,8 @@ def match(payload):
             if best is not None: chosen.append(best)
         recognition=time.monotonic()-started
         if not chosen:
-            if a.pose_logos and a.pose_profiles and b.pose_profiles and time.monotonic()<deadline:
-                try:
-                    # Check cached anatomy before reading the full originals.
-                    if not any(_pose_unique_source(session,source_id,a,p) for p in b.pose_profiles):raise ValueError('结构或素材归属存在歧义')
-                    result=pose.analyze_images(_read_original(a),_read_original(b),protections=payload.get('protections'),
-                                              prepared_logos=a.pose_logos,source_profiles=a.pose_profiles,target_profiles=b.pose_profiles)
-                    return {'ok':True,'results':[result],'reason':'','recognitionMs':round((time.monotonic()-started)*1000)}
-                except ValueError:pass
-            return {'ok':True,'results':[],'reason':'未找到快速可靠匹配；跨姿势可标记 Logo 后校准','recognitionMs':round(recognition*1000)}
+            return {'ok':True,'results':[],'reason':'未找到快速可靠匹配，留待手动补充','recognitionMs':round(recognition*1000)}
         source,target=_read_original(a),_read_original(b)
-        if a.opaque:source=pose.cut_flat_background(source)
         results=[]
         for small_candidate,quality in chosen:
             H=b.to_original@small_candidate.transform@np.linalg.inv(a.to_original)
@@ -228,9 +185,6 @@ def match(payload):
             tp=cv2.perspectiveTransform(small_candidate.target_points[:,None,:],b.to_original).reshape(-1,2)
             candidate=engine.Candidate(H,small_candidate.method,small_candidate.matches,small_candidate.inliers,sp,tp)
             bounds=engine._geometry(source,target,H).tolist()
-            if a.explicit_boxes and a.pose_logos:
-                result=pose.analyze_images(source,target,prepared_logos=a.pose_logos,protections=payload.get('protections'),registration_transform=H)
-                result['score']=round(quality['score'],1);results.append(result);continue
             layer,regions=engine._copy_layer(source,target,H,protections=payload.get('protections'),candidate=candidate)
             pixels=int(np.count_nonzero(layer[:,:,3]))
             if pixels<10: continue

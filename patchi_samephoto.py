@@ -543,13 +543,7 @@ def analyze(source_data,target_data,hint=None,logo_box=None,protections=None,log
     # Opaque photos need an explicit crop, avoiding accidental background/text replacement.
     transparent=float(np.mean(source[:,:,3]<250))>.005
     if not transparent and logo_box is None:
-        from patchi_pose import cut_flat_background
-        source=cut_flat_background(source)
-        transparent=True
-    if manual_points is None and logo_box is None:
-        from patchi_pose import anatomy_first
-        independent=anatomy_first(source,target,hint,protections)
-        if independent is not None:return independent
+        raise ValueError('请使用已贴好 Logo 的透明 PNG；可先用 AI 抠图去掉素材背景。')
     warnings=[]
     if manual_points is not None:
         H=_manual_transform(source,target,manual_points)
@@ -595,25 +589,5 @@ def handle_payload(payload):
     hint=payload.get('hint');roi=payload.get('logoBox')
     if hint is not None and (not isinstance(hint,list) or len(hint)!=2 or not np.isfinite(hint).all()):raise ValueError('点击参数错误')
     if roi is not None and (not isinstance(roi,list) or len(roi)!=4 or not np.isfinite(roi).all() or roi[2]<=1 or roi[3]<=1):raise ValueError('框选参数错误')
-    if payload.get('mode')=='pose' or payload.get('posePoints') is not None:
-        from patchi_pose import handle as pose_handle
-        body=dict(payload)
-        if payload.get('posePoints') is not None:body['manualPoints']=payload['posePoints']
-        return pose_handle(body)
-    try:
-        result=analyze(payload.get('source'),payload.get('target'),hint=hint,logo_box=roi,
-                       protections=payload.get('protections'),manual_points=payload.get('manualPoints'))
-        if payload.get('sourceLogoBoxes') and result.get('transform') is None:
-            from patchi_pose import handle as pose_handle
-            return pose_handle(payload)
-        if payload.get('sourceLogoBoxes'):
-            from patchi_pose import analyze_images
-            isolated=analyze_images(_decode(payload.get('source')),_decode(payload.get('target')),source_boxes=payload['sourceLogoBoxes'],
-                                    protections=payload.get('protections'),registration_transform=result['transform'])
-            isolated['score']=result['score'];return isolated
-        return result
-    except ValueError as original:
-        from patchi_pose import handle as pose_handle
-        try:return pose_handle(payload)
-        except ValueError as cross_pose:
-            raise ValueError(str(cross_pose)+'；同源匹配：'+str(original)) from None
+    return analyze(payload.get('source'),payload.get('target'),hint=hint,logo_box=roi,
+                   protections=payload.get('protections'),manual_points=payload.get('manualPoints'))
