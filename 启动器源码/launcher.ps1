@@ -70,7 +70,7 @@ $script:Log = Join-Path $script:Runtime 'launcher.log'
 $script:Busy = $false
 $script:StopRequested = $false
 $script:State = $null
-$Version = '2026.10.13.7'
+$Version = '2026.10.14.8'
 $PythonUrl = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe'
 $PythonSha = '67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb'
 $Probe = @'
@@ -215,7 +215,7 @@ function Update-EnvironmentCards {
 
 function Check-Environment {
     Set-Status '正在检查程序文件、Python、依赖和浏览器…'
-    foreach($name in @('帕琪工坊.py','帕琪工坊_智能详情页制作工具.html','patchi_samephoto.py','patchi_download_stable.py','requirements_套图.txt','patchi_batch.py','patchi_mainphoto.py')) {
+    foreach($name in @('帕琪工坊.py','帕琪工坊_智能详情页制作工具.html','patchi_samephoto.py','patchi_download_stable.py','requirements_套图.txt','patchi_batch.py','patchi_mainphoto.py','patchi_ai.py','patchi_ai_prompts.py')) {
         if(-not(Test-Path -LiteralPath (Join-Path $AppDir $name) -PathType Leaf)){throw ('更新包缺少 '+$name+'，请完整解压后启动。')}
     }
     $python=Find-Python; $browser=Find-Browser
@@ -330,6 +330,10 @@ function Start-Workshop {
         if(-not $health){if(-not $helper.HasExited){$helper.Kill()};throw '助手未在 25 秒内就绪，请查看 .runtime 下的日志。'}
         if($health.service -ne 'patchi-helper' -or $health.appVersion -ne $Version){if(-not $helper.HasExited){$helper.Kill()};throw '8765 端口被其他服务占用，请关闭旧助手。'}
     }
+    $reset=[Net.HttpWebRequest]::Create('http://127.0.0.1:8765/workspace/new-session')
+    $reset.Proxy=$null;$reset.Method='POST';$reset.ContentLength=0;$reset.Timeout=10000
+    $reset.Headers.Add('X-Patchi-Launcher','1')
+    $response=$reset.GetResponse();$response.Close()
     $null=Start-Process -FilePath $script:State.Browser -ArgumentList 'http://127.0.0.1:8765/'
     Write-Log '已启动脚本并打开网页。助手在后台运行；重复启动会复用本版助手。'
     $script:Form.Tag='success';$script:Form.Close()

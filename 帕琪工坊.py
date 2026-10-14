@@ -1440,7 +1440,7 @@ GEMINI_MODELS = (
     'gemini-2.5-flash',       # legacy project compatibility
     'gemini-2.5-flash-lite',  # legacy inexpensive fallback
 )
-GEMINI_API_PROTOCOL = 4  # expanded model choices and persistent selection
+GEMINI_API_PROTOCOL = 5  # expanded model choices and persistent selection
 GEMINI_DIR = (Path(os.environ.get('LOCALAPPDATA', str(Path.home()/'.local'/'share'))) / '帕琪工坊')
 GEMINI_SECRET = GEMINI_DIR / 'gemini_api_key.dpapi'
 GEMINI_CONFIG = GEMINI_DIR / 'gemini_settings.json'
@@ -1491,85 +1491,19 @@ def load_gemini_local():
         print('[Gemini] 密钥解密失败，请在编辑器重新输入：', str(exc)[:120], flush=True)
 
 
-def set_gemini_settings(data):
-    global gemini_key, gemini_model, gemini_saved
-    if not isinstance(data, dict): raise ValueError('配置格式错误')
-    requested = data.get('model', gemini_model)
-    if requested not in GEMINI_MODELS: raise ValueError('不支持的 Gemini 模型')
-    key = str(data.get('key') or '').strip()
-    if key and (len(key) > 512 or len(key) < 12 or not re.fullmatch(r'[A-Za-z0-9_\-]+', key)):
-        raise ValueError('API Key 格式无效，请检查是否有空格或换行')
-    with gemini_lock:
-        gemini_model = requested
-        if data.get('clear'):
-            gemini_key, gemini_saved = '', False
-            GEMINI_SECRET.unlink(missing_ok=True)
-        elif key:
-            # Fail visibly before replacing existing key if DPAPI protection is requested.
-            if data.get('remember', False):
-                encrypted = dpapi_transform(key.encode('utf-8'), True)
-                GEMINI_DIR.mkdir(parents=True, exist_ok=True)
-                GEMINI_SECRET.write_bytes(encrypted)
-                gemini_saved = True
-            else:
-                GEMINI_SECRET.unlink(missing_ok=True)
-                gemini_saved = False
-            gemini_key = key
-        GEMINI_DIR.mkdir(parents=True, exist_ok=True)
-        GEMINI_CONFIG.write_text(json.dumps({'model': gemini_model}, ensure_ascii=False), encoding='utf8')
-        return {'configured': bool(gemini_key), 'saved': gemini_saved, 'model': gemini_model}
+from patchi_ai import Pool, Jobs
+from patchi_ai_prompts import *
+ai_pool = Pool(GEMINI_DIR, dpapi_transform)
+ai_jobs = Jobs()
 
+def set_gemini_settings(data):
+    return ai_pool.configure(data)
 
 def public_gemini_settings():
-    with gemini_lock:
-        return {'configured': bool(gemini_key), 'saved': gemini_saved, 'model': gemini_model, 'models': list(GEMINI_MODELS)}
-
+    return ai_pool.public()
 
 def available_gemini_models():
-    """Ask Google's public models endpoint which configured vision models this API key can call."""
-    with gemini_lock:
-        key=gemini_key
-    if not key:
-        raise ValueError('请先保存 Gemini API Key，再检测可用模型')
-    req=urllib.request.Request('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000',
-        headers={'x-goog-api-key':key,'User-Agent':'PatchiAtelier/2.0','Accept':'application/json'})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as res:
-            data=json.load(res)
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401,403): raise ValueError('Google 拒绝读取模型列表，请检查 API Key、权限或所在地区')
-        if exc.code == 429: raise ValueError('Google 模型列表暂时限流（429），稍后重试')
-        raise RuntimeError('读取 Google 模型列表失败（HTTP %d）'%exc.code)
-    except urllib.error.URLError as exc:
-        raise RuntimeError('无法连接 Gemini 模型列表，请检查网络/代理：'+str(exc.reason)[:120])
-    offered={entry.get('name','').removeprefix('models/') for entry in data.get('models',[])
-             if 'generateContent' in entry.get('supportedGenerationMethods',[])}
-    return {'models':[m for m in GEMINI_MODELS if m in offered],
-            'selected':gemini_model,'checked':True,
-            'notice':'仅显示当前 API Key 可见且支持 generateContent 的预设模型；实际配额以 Google 为准。'}
-
-
-TABLE_SCHEMA = {
-    'type': 'object',
-    'properties': {
-        k: {'type': 'object', 'properties': {
-            'columns': {'type': 'array', 'items': {'type': 'string'}},
-            'rows': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'string'}}},
-            'uncertain': {'type': 'array', 'items': {'type': 'string'}}
-        }, 'required': ['columns', 'rows', 'uncertain']}
-        for k in ('size', 'recommend')
-    } | {'notes': {'type': 'array', 'items': {'type': 'string'}}},
-    'required': ['size', 'recommend', 'notes']
-}
-GEMINI_PROMPT = """你是服装尺码表结构化识别专家，请直接读取用户上传的尺码表截图或图片。
-严格逐格识别，只提取图片实际可见的表格数据。
-输出 size=商品尺寸测量表（尺码、衣长、胸围、肩宽、袖长、裤长、腰围等），recommend=身高体重/尺码推荐表。
-多个表格必须根据用途正确归类；只有一个表格则另一个 columns 和 rows 返回空数组。
-columns 保留原图表头文字、顺序和单位（如 cm、inch、kg、斤）；rows 每格均是字符串，严格按行列对应，缺失单元格填空字符串。
-识别不清的数字、单位或表头不要猜测；在 uncertain 和 notes 指出所在行列待人工核对。不要根据经验自动计算、补全、换算、翻译或更改数值。
-不要把宣传语、广告、尺码提示段落当作数据行，不要把带单位的一列拆成两列；合并单元格可按实际含义重复到相应格并在 notes 说明。
-不得推断图片上不存在的数据；只返回符合 schema 的 JSON。"""
-
+    return ai_pool.list_models()
 
 # 商品资料字段保持开放；图片里的成分项目不可通过穷举字段名判断。
 # 只过滤明确与商品规格展示无关的管理字段。
@@ -1582,29 +1516,6 @@ PRODUCT_NOISE_LABELS = frozenset((
     '报价','采购价','成本价','供应商','联系人','联系电话','网址',
     '二维码','备注（内部）','宣传语','库存数','订单数',
 ))
-PRODUCT_SCHEMA = {
-    'type':'object',
-    'properties':{
-        'fields':{'type':'array','items':{'type':'object','properties':{
-            'label':{'type':'string'},'value':{'type':'string'},'evidence':{'type':'string'}
-        },'required':['label','value','evidence']}},
-        'notes':{'type':'array','items':{'type':'string'}}
-    },'required':['fields','notes']
-}
-PRODUCT_PROMPT = """你是服装商品资料的忠实文字识别器。读取图片上实际印刷/标注的中文或英文商品属性，尽量保留原始内容、先后顺序和换行。
-仅提取图片里有明确文字证据的信息。不要根据服装外观猜测成分、名称、性能、版型和数字。
-常规商品字段（品名、颜色、尺码、版型等）照常提取，颜色尺码保留原图信息；无关货号、价格、流水号、营销文案等不必提取。
-【重要：成分/材质信息采用完全开放的原文摘录，不设固定项目表】
-- 图片可能写面料、里料、面层、底层、绒子含量、充绒量、填充物、外层/内层，或其他任何未列出的部位、层次、材料比例及指标；这些仅是例子，绝不是识别白名单。
-- 只要原图属于成分、材质、原料、填充、层次、含量、克重等材料说明区域的文本，都完整照抄；不要因字段名陌生而忽略，不要更改名称，不要统一改叫“面料”或“填充”。
-- 首选整合为 fields 中的一项：label="成分"，value 为按图片阅读顺序逐行排列的完整原文。每个来源行/项目单独一行，用真实换行符 \n 分隔，不使用分号合并行；每行保留图片中原有的项目名称、冒号、百分数、小数、单位和内容。例如："面层：棉52.8%
-里料：聚酯纤维100%
-绒子含量：90%"。示例并不限制可提取的名称。
-- 也允许源图本身有多个材料栏时以原名称分别输出多个 fields，仍必须保留原图先后顺序；任何未知成分行都不得因为不在词典内而丢掉。
-- 不要重排材料行、去重、合并不同百分比、换算、翻译、补足标签或凭经验生成性质。原图的一个项目过长时，可在空白/项目边界合理分行，但不要拆开材料名和对应数值。
-- fields 的 label、value、evidence 均为字符串，evidence 引用该字段在图片上的实际可见文字。材料块 evidence 可填写首行简短原文。
-- 如看不清某个字词，保留确定内容，说明疑点于 notes，不得捏造。没有文字依据的字段不要输出。
-请只返回符合 schema 的 JSON。"""
 
 
 def normalize_product_result(raw):
@@ -1659,13 +1570,6 @@ def normalize_gemini_result(raw):
     return result
 
 
-DETAIL_CAPTION_SCHEMA = {'type':'object','properties':{'caption':{'type':'string'}},'required':['caption']}
-DETAIL_CAPTION_PROMPT = """你是一名擅长服装电商详情页的中文短文案编辑，任务是观察用户给的【单张】服装细节实拍图，为该图的下方文字区写一条简洁文案。
-严格参考示例的语言风格：『拼接走线设计｜简约有型，尽显潮范』『甄选面料｜纹理清晰，上身舒适』；只借鉴结构和节奏，不要照抄示例或声称未证实的舒适度。
-只写一个 caption 字段。建议结构：一个具体可见的细节标题 +『｜』+ 简洁描述，通常 12~26 个汉字，最多 38 字，不要换行、不加列表编号、不加表情、英文或营销感叹号。
-观察当前图片真实可见的部分，例如帽檐走线、绳带编织纹理、拉链、口袋、罗纹、纽扣等，贴近具体内容，避免每张都写『优质面料』。
-不得臆断无法从照片判断的面料成分、厚度克重、耐磨、保暖、防水、透气、科技性能、穿着体验、品牌身份；不得给图片中不存在的构件贴标签。不要输出『防水』词。看不清细节时用中性可观察的描述。
-不要识别或新增品牌宣称，保持商品真实可信。只返回符合 schema 的 JSON。"""
 
 def normalize_detail_caption(raw):
     if not isinstance(raw,dict):raise ValueError('细节图文案必须是 JSON 对象')
@@ -1678,9 +1582,9 @@ def normalize_detail_caption(raw):
 def gemini_recognize(data, product=False, detail=False):
     if not isinstance(data, dict): raise ValueError('请求格式错误')
     with gemini_lock:
-        key, model = gemini_key, data.get('model') or gemini_model
+        key, model = bool(ai_pool.apis), data.get('model') or ai_pool.model
     if not key: raise ValueError('请先在 Gemini API 设置中填写并保存 API Key')
-    if model not in GEMINI_MODELS: raise ValueError('不支持的 Gemini 模型')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model): raise ValueError('模型名称无效')
     mime = data.get('mimeType')
     if mime not in ('image/png', 'image/jpeg', 'image/webp'): raise ValueError('只支持 PNG/JPG/WebP 图片')
     encoded = data.get('image', '')
@@ -1697,22 +1601,7 @@ def gemini_recognize(data, product=False, detail=False):
         {'inline_data': {'mime_type':mime, 'data':encoded}}]}],
         'generationConfig': {'temperature':0, 'maxOutputTokens':8192,
             'responseMimeType':'application/json', 'responseSchema':DETAIL_CAPTION_SCHEMA if detail else PRODUCT_SCHEMA if product else TABLE_SCHEMA}}
-    target = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent'
-    request = urllib.request.Request(target, method='POST', data=json.dumps(payload, ensure_ascii=False).encode('utf8'),
-        headers={'Content-Type':'application/json', 'x-goog-api-key':key, 'User-Agent':'PatchiAtelier/1.0'})
-    try:
-        with urllib.request.urlopen(request, timeout=105) as response:
-            answer = json.loads(response.read(4*1024*1024))
-    except urllib.error.HTTPError as exc:
-        message = ''
-        try: message = json.loads(exc.read(4096)).get('error',{}).get('message','')
-        except Exception: pass
-        if exc.code in (401,403): raise RuntimeError('API Key 无效、项目无权限或当前地区不可用（%s）。%s'%(exc.code,message[:240]))
-        if exc.code == 429: raise RuntimeError('Gemini 免费层级请求达到速率/每日限额（429），稍后再试或换可用模型。')
-        if exc.code == 404: raise RuntimeError('Google API 返回 404：模型 '+model+' 不存在或当前密钥未获授权。请点击「检测可用模型」再选用名单中的模型。'+(' 官方说明：'+message[:140] if message else ''))
-        raise RuntimeError('Gemini API 错误 HTTP %s：%s'%(exc.code,message[:280]))
-    except urllib.error.URLError as exc:
-        raise RuntimeError('无法连接 Gemini API，请检查代理/网络/DNS：'+str(exc.reason)[:180])
+    answer = ai_pool.generate(payload, model)
     try:
         candidates = answer.get('candidates') or []
         content = candidates[0]['content']['parts']
@@ -1725,25 +1614,7 @@ def gemini_recognize(data, product=False, detail=False):
 
 
 # 详情图套版定位：Gemini 只输出坐标；实际 PNG 像素合成在浏览器本地完成。
-GARMENT_CONTOUR_SCHEMA = {
-    'type':'object',
-    'properties':{
-        'polygon':{'type':'array','items':{'type':'object','properties':{
-            'x':{'type':'integer'},'y':{'type':'integer'}},'required':['x','y']}},
-        'category':{'type':'string'},
-        'confidence':{'type':'number'}
-    },'required':['polygon','category','confidence']
-}
 
-GARMENT_CONTOUR_PROMPT = """You locate the precise outer silhouette of ONE garment item in an e-commerce detail-page screenshot.
-The garment to detect is indicated by a bright RED crosshair/circle near the clicked location.
-Click location coordinates on a normalized [0,1000] x [0,1000] image are: ({x}, {y}).
-The target may be pants, a shirt, a jacket, etc. It can be next to text, decorations, other color variants and multiple other garments.
-Output only the silhouette of the *single item indicated by the red marker*, and not the entire panel/card, any nearby promotional text, frames, arrows, or other garments.
-Trace the silhouette around cloth, waistband, cuffs and attached drawstrings, with 20-55 ordered boundary vertices; simplify only long straight edges. Include any old-brand logo printed directly ON the garment inside this boundary, since the whole old product will be removed.
-Do not include blank regions between two separate clothing items. The area between pant legs can be included in the bounding interior because image compositing replaces it with the background.
-Coordinates use normalized integer range 0-1000 for x and y, relative to the FULL input image. Do not output pixel coordinates.
-If unclear, provide an approximate boundary around only the clicked garment, and low confidence. Don't output a generic bounding rectangle if the silhouette is clearly visible. Return structured JSON polygon, category, confidence (0 to 1)."""
 
 
 def normalize_garment_contour(answer):
@@ -1771,9 +1642,9 @@ def normalize_garment_contour(answer):
 
 def gemini_garment_contour(request_data):
     with gemini_lock:
-        key,model=gemini_key,request_data.get('model') or gemini_model
+        key,model=bool(ai_pool.apis),request_data.get('model') or ai_pool.model
     if not key:raise ValueError('请先通过 Gemini API 设置保存密钥')
-    if model not in GEMINI_MODELS:raise ValueError('未知 Gemini 模型，请在设置中选择可用模型')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model):raise ValueError('模型名称无效')
     click=request_data.get('click') or []
     if not isinstance(click,list) or len(click)!=2 or any(type(v) not in (int,float) or not 0<=v<=1000 for v in click):
         raise ValueError('点击坐标错误')
@@ -1786,25 +1657,7 @@ def gemini_garment_contour(request_data):
     prompt=GARMENT_CONTOUR_PROMPT.format(x=round(click[0]),y=round(click[1]))
     payload={'contents':[{'role':'user','parts':[{'text':prompt},{'inline_data':{'mime_type':'image/jpeg','data':encoded}}]}],
              'generationConfig':{'temperature':0,'maxOutputTokens':5000,'responseMimeType':'application/json','responseSchema':GARMENT_CONTOUR_SCHEMA}}
-    target='https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent'
-    req=urllib.request.Request(target,method='POST',data=json.dumps(payload,ensure_ascii=False).encode('utf8'),
-                               headers={'Content-Type':'application/json','x-goog-api-key':key,'User-Agent':'PatchiAtelier/1.0'})
-    try:
-        with urllib.request.urlopen(req,timeout=105) as r:
-            response=json.loads(r.read(4*1024*1024))
-    except urllib.error.HTTPError as exc:
-        msg=''
-        try:msg=json.loads(exc.read(4096)).get('error',{}).get('message','')
-        except Exception:pass
-        if exc.code==429:raise RuntimeError('Gemini 请求过于频繁或已达免费配额；可切换手动框选。')
-        if exc.code==404 and model!='gemini-2.5-flash':
-            # 选中模型不可用时仅本次视觉定位回退，不修改用户已保存的模型偏好。
-            return gemini_garment_contour({**request_data,'model':'gemini-2.5-flash'})
-        if exc.code==404:raise RuntimeError('此模型不存在/未授权，请从已有模型列表中选择真实可用的模型；'+msg[:170])
-        if exc.code in (401,403):raise RuntimeError('Gemini 密钥、地区或权限问题：'+msg[:180])
-        raise RuntimeError('Gemini 接口返回 '+str(exc.code)+'：'+msg[:210])
-    except urllib.error.URLError as exc:
-        raise RuntimeError('无法连接 Gemini：'+str(exc.reason)[:180])
+    response=ai_pool.generate(payload,model)
     try:
         items=response['candidates'][0]['content']['parts']
         parsed=json.loads(''.join(x.get('text','') for x in items))
@@ -1814,6 +1667,14 @@ def gemini_garment_contour(request_data):
 
 
 load_gemini_local()
+if gemini_key and not ai_pool.apis:
+    ai_pool.configure({'key':gemini_key,'model':gemini_model,'remember':gemini_saved,'name':'原有 API'})
+
+def dispatch_ai(feature,payload,model):
+    from patchi_mainphoto import process, process_overlay
+    if feature=='main-image': return process(payload,True,model,lambda body:ai_pool.generate(body,model))
+    if feature=='detail-current': return process_overlay(payload,True,model,lambda body:ai_pool.generate(body,model))
+    raise ValueError('未知 AI 任务')
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
@@ -1825,7 +1686,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', origin)
             self.send_header('Vary', 'Origin')
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS, GET')
-        self.send_header('Access-Control-Allow-Headers', 'X-API-Key, Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'X-API-Key, Content-Type, X-Patchi-Session')
 
     def reply(self, status, data, content_type):
         self.send_response(status)
@@ -1845,6 +1706,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get('Host', '').split(':')[0] not in ('127.0.0.1','localhost'):
             return self.reply_json(403, {'error':'拒绝非本机 Host'})
+        if self.path.startswith('/ai/jobs/'):
+            try: return self.reply_json(200, ai_jobs.get(self.path.rsplit('/',1)[-1]))
+            except ValueError as exc:return self.reply_json(404,{'error':str(exc)})
         if self.path == '/gemini/settings':
             return self.reply_json(200, public_gemini_settings())
         if self.path == '/gemini/models':
@@ -1856,7 +1720,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path.exists():return self.reply_json(404,{'error':'编辑器HTML不存在，请重新解压完整包'})
             return self.reply(200,path.read_bytes(),'text/html; charset=utf-8')
         if self.path == '/health':
-            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.13.7', 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
+            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.14.8', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
         if self.path == '/auto/status':
             return self.reply_json(200, api_state())
         if self.path.startswith('/auto/diagnostic/'):
@@ -1896,7 +1760,7 @@ class Handler(BaseHTTPRequestHandler):
             origin=self.headers.get('Origin','')
             if origin and origin not in ('null',f'http://{HOST}:{PORT}',f'http://localhost:{PORT}'):
                 return self.reply_json(403,{'error':'拒绝非本地编辑器请求'})
-            if self.path.startswith('/gemini/') and origin != f'http://{HOST}:{PORT}' and origin != f'http://localhost:{PORT}':
+            if self.path.startswith(('/gemini/','/ai/')) and origin != f'http://{HOST}:{PORT}' and origin != f'http://localhost:{PORT}':
                 return self.reply_json(403, {'error':'请从本机助手 http://127.0.0.1:8765 打开编辑器；不要双击 HTML 文件'})
             if self.path.startswith('/replace/batch/'):
                 if origin not in (f'http://{HOST}:{PORT}', f'http://localhost:{PORT}'):
@@ -1912,13 +1776,17 @@ class Handler(BaseHTTPRequestHandler):
                 except ImportError as exc:
                     return self.reply_json(503, {'error':'本地配准引擎未安装：请运行「打开帕琪工坊.bat」安装 numpy、Pillow、opencv-python。'+str(exc)[:120]})
                 return self.reply_json(200, handle_payload(json.loads(self.body(limit=74*1024*1024))))
+            if self.path == '/workspace/new-session':
+                if origin or self.headers.get('X-Patchi-Launcher')!='1':
+                    return self.reply_json(403,{'error':'仅启动器可开始新工作'})
+                stop_flag=True
+                return self.reply_json(200,{'session':ai_jobs.reset()})
+            if self.path == '/ai/jobs':
+                return self.reply_json(200,ai_jobs.submit(json.loads(self.body(limit=84*1024*1024)),dispatch_ai,ai_pool.model))
             if self.path == '/gemini/main-image':
-                from patchi_mainphoto import process as process_mainphoto
-                with gemini_lock:
-                    key, selected_model = gemini_key, gemini_model
-                return self.reply_json(200, process_mainphoto(json.loads(self.body(limit=84*1024*1024)),key,selected_model))
+                return self.reply_json(200,dispatch_ai('main-image',json.loads(self.body(limit=84*1024*1024)),ai_pool.model))
             if self.path == '/gemini/settings':
-                return self.reply_json(200, set_gemini_settings(json.loads(self.body(limit=4096))))
+                return self.reply_json(200, set_gemini_settings(json.loads(self.body(limit=32768))))
             if self.path == '/gemini/garment-contour':
                 return self.reply_json(200, gemini_garment_contour(json.loads(self.body(limit=18*1024*1024))))
             if self.path in ('/gemini/recognize','/gemini/product','/gemini/detail-caption'):
@@ -1999,7 +1867,7 @@ if __name__=='__main__':
             current = json.load(response)
         if (current.get('service') == 'patchi-helper'
                 and current.get('automationProtocol') == AUTOMATION_PROTOCOL
-                and current.get('appVersion') == '2026.10.13.7'):
+                and current.get('appVersion') == '2026.10.14.8'):
             print('当前修复版已在运行，正在打开编辑器。')
             if os.getenv('PAQI_NO_BROWSER') != '1': webbrowser.open(f'http://{HOST}:{PORT}/')
             sys.exit(0)
