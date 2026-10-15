@@ -109,3 +109,12 @@ For each region add material (print, woven, embroidered, patch), textureStrength
 warp is either [] (uncertain/flat) or EXACTLY 25 [dx,dy] pairs, row-major 5x5 control grid across the visible LOGO alpha bounding rectangle (not the full crop). Values are inverse sampling displacements in thousandths of logo width/height, each -40..40. Keep mean displacement near zero. Only small smooth differential distortion following clearly visible fold curvature; keep lettering legible, no whole-logo translation, rotation or size correction. Opposite grid edges should stay close to zero to retain placement. Uncertain geometry: return [].
 Transfer broad cloth illumination AND restrained fine fold texture into RGB, not alpha. Usually lightStrength .5..9 for print on deeply folded cloth, .25..55 for sewn labels; textureStrength .15..4. Never brighten a dark valley or flatten an existing ridge. The local renderer will sample original-resolution cloth; do not encode a color wash. Avoid floaty drop shadows: printed logos shadowOpacity=0; labels only a tiny contact shadow (0..0.08, blur0..4, offsets -3..3). Preserve all solid logo alpha, design, brand colors, irregular perimeter and internal holes. Only tightly traced real foreground collars/strings may occlude. Explain ambiguity briefly in Chinese.
 '''
+
+
+# One small image+JSON request per model verifies current permission and quota.
+MODEL_CHECK_BODY = {
+    'contents':[{'role':'user','parts':[{'text':'Return {"ok":true} if you can read this test image.'},
+        {'inlineData':{'mimeType':'image/png','data':'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAgElEQVR4nO3awQnDMBAAQcukGZeRslKBy0oZLkf55W9CGAQ77xPccl+NOee2sl0v8KsCtAK0ArQCtAK0ArQCtMfdB8fr/Y89vq7zeWt++QsUoBWgFaAVoBWgFaAVoBWgFaAVoBWgFaAVoBWgFaCN/gthBWgFaAVoBWgFaAVoBWgfG6AJey8JQOgAAAAASUVORK5CYII='}}]}],
+    'generationConfig':{'temperature':0,'maxOutputTokens':1024,'responseMimeType':'application/json',
+        'responseSchema':{'type':'OBJECT','properties':{'ok':{'type':'BOOLEAN'}},'required':['ok']}}
+}

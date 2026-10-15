@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageOps, ImageFilter, ImageDraw
 
 MAX_PIXELS = 32_000_000
-MAX_FILE = 26 * 1024 * 1024
+MAX_FILE = 128 * 1024 * 1024
 MAX_LOGOS = 8
 
 
@@ -18,8 +18,10 @@ def decode_image(value, max_pixels=MAX_PIXELS, max_file=MAX_FILE):
     if not isinstance(value, str) or not re.match(r'^data:image/(png|jpeg|webp);base64,', value):
         raise ValueError('请上传 PNG、JPG 或 WebP 图片')
     try:
-        raw = base64.b64decode(value.split(',', 1)[1], validate=True)
-        if len(raw) > max_file: raise ValueError('图片文件过大')
+        encoded=value.split(',',1)[1]
+        if len(encoded)>4*((max_file+2)//3): raise ValueError('图片超过 %dMB 输入上限'%(max_file//(1024*1024)))
+        raw = base64.b64decode(encoded, validate=True)
+        if len(raw) > max_file: raise ValueError('图片超过 %dMB 输入上限'%(max_file//(1024*1024)))
         with Image.open(io.BytesIO(raw)) as image:
             if image.width * image.height > max_pixels: raise ValueError('图片超过像素限制')
             if image.format not in ('PNG', 'JPEG', 'WEBP'): raise ValueError('图片格式不支持')
@@ -50,7 +52,7 @@ def prepare(payload):
         identity = str(entry.get('id', ''))
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', identity) or identity in ids: raise ValueError('Logo 标识重复或无效')
         ids.add(identity)
-        image = decode_image(entry.get('src'), 8_000_000, 5*1024*1024)
+        image = decode_image(entry.get('src'), MAX_PIXELS, MAX_FILE)
         lw = finite(entry.get('w'), 1, 2*w, 'Logo 宽度'); lh = finite(entry.get('h'), 1, 2*h, 'Logo 高度')
         if lw*lh > 16_000_000: raise ValueError('Logo 输出面积超过 1600 万像素，请缩小尺寸')
         x = finite(entry.get('x'), -w, 2*w, 'Logo 横坐标'); y = finite(entry.get('y'), -h, 2*h, 'Logo 纵坐标')

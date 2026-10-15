@@ -1440,7 +1440,7 @@ GEMINI_MODELS = (
     'gemini-2.5-flash',       # legacy project compatibility
     'gemini-2.5-flash-lite',  # legacy inexpensive fallback
 )
-GEMINI_API_PROTOCOL = 5  # expanded model choices and persistent selection
+GEMINI_API_PROTOCOL = 6  # expanded model choices and persistent selection
 GEMINI_DIR = (Path(os.environ.get('LOCALAPPDATA', str(Path.home()/'.local'/'share'))) / '帕琪工坊')
 GEMINI_SECRET = GEMINI_DIR / 'gemini_api_key.dpapi'
 GEMINI_CONFIG = GEMINI_DIR / 'gemini_settings.json'
@@ -1720,7 +1720,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path.exists():return self.reply_json(404,{'error':'编辑器HTML不存在，请重新解压完整包'})
             return self.reply(200,path.read_bytes(),'text/html; charset=utf-8')
         if self.path == '/health':
-            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.14.8', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
+            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.15.9', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
         if self.path == '/auto/status':
             return self.reply_json(200, api_state())
         if self.path.startswith('/auto/diagnostic/'):
@@ -1782,11 +1782,14 @@ class Handler(BaseHTTPRequestHandler):
                 stop_flag=True
                 return self.reply_json(200,{'session':ai_jobs.reset()})
             if self.path == '/ai/jobs':
-                return self.reply_json(200,ai_jobs.submit(json.loads(self.body(limit=84*1024*1024)),dispatch_ai,ai_pool.model))
+                return self.reply_json(200,ai_jobs.submit(json.loads(self.body(limit=384*1024*1024)),dispatch_ai,ai_pool.model))
             if self.path == '/gemini/main-image':
-                return self.reply_json(200,dispatch_ai('main-image',json.loads(self.body(limit=84*1024*1024)),ai_pool.model))
+                return self.reply_json(200,dispatch_ai('main-image',json.loads(self.body(limit=384*1024*1024)),ai_pool.model))
+            if self.path == '/gemini/models/check':
+                self.body(limit=4096)
+                return self.reply_json(200, ai_pool.start_check())
             if self.path == '/gemini/settings':
-                return self.reply_json(200, set_gemini_settings(json.loads(self.body(limit=32768))))
+                return self.reply_json(200, set_gemini_settings(json.loads(self.body(limit=65536))))
             if self.path == '/gemini/garment-contour':
                 return self.reply_json(200, gemini_garment_contour(json.loads(self.body(limit=18*1024*1024))))
             if self.path in ('/gemini/recognize','/gemini/product','/gemini/detail-caption'):
@@ -1867,7 +1870,7 @@ if __name__=='__main__':
             current = json.load(response)
         if (current.get('service') == 'patchi-helper'
                 and current.get('automationProtocol') == AUTOMATION_PROTOCOL
-                and current.get('appVersion') == '2026.10.14.8'):
+                and current.get('appVersion') == '2026.10.15.9'):
             print('当前修复版已在运行，正在打开编辑器。')
             if os.getenv('PAQI_NO_BROWSER') != '1': webbrowser.open(f'http://{HOST}:{PORT}/')
             sys.exit(0)
