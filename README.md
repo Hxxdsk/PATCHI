@@ -1,8 +1,8 @@
 # 帕琪工坊 PATCHI
 
-当前版本：2026.10.19.12
+当前版本：2026.10.19.13
 
-[下载完整更新包](https://github.com/Hxxdsk/PATCHI/raw/refs/heads/main/downloads/%E5%B8%95%E7%90%AA%E5%B7%A5%E5%9D%8A_%E5%AE%8C%E6%95%B4%E6%9B%B4%E6%96%B0%E5%8C%85_2026.10.19.12.zip)
+[下载完整更新包](https://github.com/Hxxdsk/PATCHI/raw/refs/heads/main/downloads/%E5%B8%95%E7%90%AA%E5%B7%A5%E5%9D%8A_%E5%AE%8C%E6%95%B4%E6%9B%B4%E6%96%B0%E5%8C%85_2026.10.19.13.zip)
 
 完整解压，关闭旧助手后双击「帕琪工坊启动器.exe」。更新请替换整个程序文件夹。
 

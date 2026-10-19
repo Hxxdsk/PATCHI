@@ -1068,8 +1068,28 @@ async function recognizeGemini(file){if(geminiBusy)return;geminiBusy=true;$('#oc
  let notes=[...(x.tables.notes||[]),...ocrDraft.size.uncertain,...ocrDraft.recommend.uncertain].filter(Boolean);
  $('#ocrStatus').textContent=`✓ Gemini ${x.model}：产品尺码 ${n} 行、推荐尺码 ${r} 行。`+(notes.length?' 待核对：'+notes.slice(0,6).join('；'):' 请对照原图确认每一格。');}
  catch(e){$('#ocrStatus').textContent='⚠ Gemini 识别失败：'+e.message;console.warn('Gemini recognition',e);}finally{geminiBusy=false;$('#ocrReanalyze').disabled=!geminiChartFile;$('#ocrChooseAnother').disabled=false;}}
-function applyOCR(){const useSize=$('#ocrUseSize').checked,useRec=$('#ocrUseRec').checked;const size=state.pages.find(x=>x.type==='size'),rec=state.pages.find(x=>x.type==='recommend');if(!useSize&&!useRec){toast('至少选择一张表');return}let n=0;for(const [checked,p,typ] of [[useSize,size,'size'],[useRec,rec,'recommend']]){if(!checked)continue;if(!p){toast('项目中没有“'+TYPES[typ]+'”页，请先添加该页面');continue}const d=ocrDraft[typ];if(!d.rows.length)continue;const missing=d.columns.filter(x=>x.includes('待核对'));if(missing.length){$('#ocrStatus').textContent=TYPES[typ]+'有 '+missing.length+' 列未核对，请先修改橙色表头或选择适用的常用表头，确认后再导入。';toast('请先核对所有橙色表头');return;}p.columns=[...d.columns];p.rows=d.rows.map(x=>[...x]);n++;}
-if(!n){toast('没有可导入的数据，请先识别图片或粘贴文本');return}closeOCR();const chosen=useSize&&size?size:rec;state.activeId=chosen.id;state.selectedSlot=null;touch(true);toast('已导入 '+n+' 张尺码表，请检查表格及数值');}
+function applyOCR(){
+ const feedback=text=>{$('#ocrStatus').textContent=text;toast(text)};
+ if(geminiBusy){feedback('正在识别，请等待完成后再确认导入');return}
+ const choices=[['size',$('#ocrUseSize').checked],['recommend',$('#ocrUseRec').checked]];
+ if(!choices.some(([,checked])=>checked)){feedback('至少选择一张表');return}
+ const pending=[];
+ for(const [typ,checked] of choices){
+  const d=ocrDraft[typ];if(!checked||!d?.rows?.length)continue;
+  const p=state.pages.find(x=>x.type===typ);
+  if(!p){feedback('项目中没有“'+TYPES[typ]+'”页，请先添加该页面后再导入，或取消勾选该表');return}
+  const missing=d.columns.filter(x=>!String(x).trim()||String(x).includes('待核对'));
+  if(missing.length){feedback(TYPES[typ]+'有 '+missing.length+' 列未核对，请先修改橙色表头或选择适用的常用表头，确认后再导入。');return}
+  pending.push({page:p,columns:[...d.columns],rows:d.rows.map(row=>[...row])});
+ }
+ if(!pending.length){feedback('没有可导入的数据，请先识别图片或粘贴文本并点击重新解析');return}
+ // Validate every selected table before writing any page.
+ for(const entry of pending){entry.page.columns=entry.columns;entry.page.rows=entry.rows}
+ state.activeId=pending[0].page.id;state.selectedSlot=null;closeOCR();touch(true);
+ toast('已导入 '+pending.length+' 张尺码表，请检查表格及数值');
+}
+$('#ocrApply').addEventListener('click',applyOCR);
+$('#ocrReparse').addEventListener('click',parseOCRAndReview);
 $('#chartInput').addEventListener('change',e=>{const file=e.target.files?.[0];if(file)readChartFile(file);e.target.value=''});
 $('#ocrClose').addEventListener('click',closeOCR);$('#ocrCancel').addEventListener('click',closeOCR);$('#ocrChooseAnother').addEventListener('click',()=>$('#chartInput').click());$('#ocrReanalyze').addEventListener('click',()=>{if(geminiChartFile)recognizeGemini(geminiChartFile)});
 $('#ocrOverlay').addEventListener('input',e=>{const t=e.target;if(!t.dataset.ocrTable)return;const d=ocrDraft[t.dataset.ocrTable];if(t.dataset.ocrCol!=null){d.columns[+t.dataset.ocrCol]=t.value;t.classList.toggle('ocr-pending',t.value.includes('待核对'))}else d.rows[+t.dataset.ocrRow][+t.dataset.ocrCell]=t.value;});
