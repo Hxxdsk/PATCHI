@@ -67,7 +67,7 @@ class Pool:
 
     def _available(self, identity, model):
         c=self.checks.get((identity,model),{})
-        return c.get('status')=='available' and not self._remaining(identity,model)
+        return c.get('status') in ('available','listed') and not c.get('zeroQuota') and not self._remaining(identity,model)
 
     def _details(self):
         merged={}
@@ -206,16 +206,12 @@ class Pool:
                 with self.lock:
                     if cancel.is_set(): return
                     self.models[a['id']]=entries; self.api_errors.pop(a['id'],None); scan['total']+=len(entries)
-                    for m in entries: self.checks[(a['id'],m['id'])]={'status':'checking','checkedAt':time.time()}
-                for entry in entries:
-                    if cancel.is_set(): return
-                    result=self._probe(a,entry['id'])
-                    with self.lock:
-                        if cancel.is_set(): return
-                        self.checks[(a['id'],entry['id'])]=result; scan['done']+=1
-                        if result['status']=='available':
-                            self.cooldowns.pop((a['id'],entry['id']),None); self.denied.pop((a['id'],entry['id']),None)
-                    if cancel.wait(.15): return
+                    for entry in entries:
+                        pair=(a['id'],entry['id']); old=self.checks.get(pair,{})
+                        # Catalog visibility is not a paid inference or a quota guarantee.
+                        if old.get('status')!='available' and not self._remaining(*pair):
+                            self.checks[pair]={'status':'listed','checkedAt':time.time()}
+                    scan['done']+=len(entries)
             except Exception as e:
                 code=e.code if isinstance(e,urllib.error.HTTPError) else None
                 with self.lock:
@@ -227,7 +223,7 @@ class Pool:
         def run():
             from concurrent.futures import ThreadPoolExecutor
             try:
-                with ThreadPoolExecutor(max_workers=min(3,len(apis))) as executor: list(executor.map(one,apis))
+                with ThreadPoolExecutor(max_workers=min(8,len(apis))) as executor: list(executor.map(one,apis))
             finally:
                 with self.lock:
                     if not cancel.is_set(): scan['status']='done'; scan['completedAt']=time.time()

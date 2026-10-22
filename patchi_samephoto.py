@@ -125,7 +125,7 @@ def _protect_mask(w, h, protections):
 
 
 
-ENGINE_VERSION = '3.4-balanced-detail'
+ENGINE_VERSION = '3.5-white-background'
 
 
 def _occlusion_mask(warped, target):
@@ -535,16 +535,36 @@ def _copy_layer(source,target,H,roi=None,protections=None,candidate=None):
     return layer,[region]
 
 
+def prepare_source(image):
+    """Remove only near-white pixels connected to image borders, for registration/output support.
+    Internal whites (labels, print, garment highlights) are never globally keyed out.
+    """
+    if np.mean(image[:,:,3]<250)>.005: return image, 'transparent'
+    rgb=image[:,:,:3]
+    white=(rgb.min(2)>=238)&((rgb.max(2)-rgb.min(2))<=24)
+    border=np.concatenate((white[0],white[-1],white[:,0],white[:,-1]))
+    if border.mean()<.65: return image, 'opaque'
+    _,labels,stats,_=cv2.connectedComponentsWithStats(white.astype(np.uint8),8)
+    ids=np.unique(np.concatenate((labels[0],labels[-1],labels[:,0],labels[:,-1])))
+    ids=ids[ids!=0]; background=np.isin(labels,ids)
+    foreground=~background
+    # Empty/ambiguous sources are not auto-matted. Original RGB is never rewritten.
+    if foreground.mean()<.02 or background.mean()<.005: return image, 'opaque'
+    out=image.copy();out[background,3]=0
+    return out, 'white'
+
+
 def analyze(source_data,target_data,hint=None,logo_box=None,protections=None,logos=None,manual_points=None):
     source,target=_decode(source_data),_decode(target_data)
+    source,background=prepare_source(source)
     if hint is None and logo_box is not None:
         hint=[logo_box[0]+logo_box[2]/2,logo_box[1]+logo_box[3]/2]
     # No color segmentation and no forced Logo catalog completeness gate.
     # Opaque photos need an explicit crop, avoiding accidental background/text replacement.
     transparent=float(np.mean(source[:,:,3]<250))>.005
     if not transparent and logo_box is None:
-        raise ValueError('请使用已贴好 Logo 的透明 PNG；可先用 AI 抠图去掉素材背景。')
-    warnings=[]
+        raise ValueError('背景无法可靠分离，请使用白底或透明素材，也可框选 Logo 范围后匹配。')
+    warnings=['白底素材：已排除边缘连通背景，请复核浅色衣物和边缘。'] if background=='white' else []
     if manual_points is not None:
         H=_manual_transform(source,target,manual_points)
         quality={'score':0.,'corr':0.,'p50':0.,'bounds':_geometry(source,target,H).tolist()}
@@ -559,7 +579,8 @@ def analyze(source_data,target_data,hint=None,logo_box=None,protections=None,log
             for c in items:
                 v=_evaluate(source,target,c,hint)
                 if v is not None and v['score']>=70:
-                    scored.append((v['score'] + (.25 if '等比' in c.method else 0),c,v))
+                    bonus=12 if background=='white' and c.method=='原尺寸' and v.get('corr',0)>.985 and v.get('clean',0)>.95 else 0
+                    scored.append((v['score']+bonus+(.25 if '等比' in c.method else 0),c,v))
         add_candidates(candidates)
         if not scored:add_candidates(_template(source,target,hint))
         if not scored:raise ValueError('未找到可靠匹配。请选择同一张原照片的已贴标素材，并点击未被遮住的衣料位置。')

@@ -1720,7 +1720,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path.exists():return self.reply_json(404,{'error':'编辑器HTML不存在，请重新解压完整包'})
             return self.reply(200,path.read_bytes(),'text/html; charset=utf-8')
         if self.path == '/health':
-            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.19.13', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
+            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.22.14', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
         if self.path == '/auto/status':
             return self.reply_json(200, api_state())
         if self.path.startswith('/auto/diagnostic/'):
@@ -1870,7 +1870,7 @@ if __name__=='__main__':
             current = json.load(response)
         if (current.get('service') == 'patchi-helper'
                 and current.get('automationProtocol') == AUTOMATION_PROTOCOL
-                and current.get('appVersion') == '2026.10.19.13'):
+                and current.get('appVersion') == '2026.10.22.14'):
             print('当前修复版已在运行，正在打开编辑器。')
             if os.getenv('PAQI_NO_BROWSER') != '1': webbrowser.open(f'http://{HOST}:{PORT}/')
             sys.exit(0)

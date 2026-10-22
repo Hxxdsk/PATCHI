@@ -213,11 +213,29 @@ def compose(original, layers, plan):
             'notice':'已保留原 Logo 轮廓与透明度；光照仅调整颜色。请核对领口、抽绳等细部遮挡。'}
 
 
+def local_plan(layers):
+    return {'summary':'本地光影融合：保留位置、图案与不透明度；遮挡请用保留原图画笔修正。',
+            'regions':[{'id':l['id'],'note':'原始像素贴标，局部明暗与细纹理融合，不自动擦除或形变。',
+             'occlusions':[],'lightStrength':.32,'textureStrength':.18,'gain':1,
+             'material':'print','shadowDx':0,'shadowDy':0,'shadowBlur':0,'shadowOpacity':0} for l in layers]}
+
+
 def process(payload, key, model, transport=None):
-    if not key: raise ValueError('请先在现有 Gemini API 设置填写并保存密钥')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model): raise ValueError('Gemini 模型标识无效')
     original,composite,layers=prepare(payload)
-    return compose(original,layers,request_plan(original,composite,layers,key,model,transport))
+    mode=payload.get('assistantMode','ai')
+    if mode not in ('local','ai'): raise ValueError('主图辅助模式无效')
+    if mode=='local': return compose(original,layers,local_plan(layers))
+    if not key: raise ValueError('请先在 Gemini API 设置保存密钥，或使用本地光影辅助')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model): raise ValueError('Gemini 模型标识无效')
+    plan=request_plan(original,composite,layers,key,model,transport)
+    # Model inventing a deformation or cast shadow must not distort artwork.
+    for region in plan.get('regions',[]):
+        region['warp']=[]; region['material']='print'; region['shadowOpacity']=0
+        region['shadowDx']=0; region['shadowDy']=0; region['shadowBlur']=0
+        region['lightStrength']=.32; region['textureStrength']=.18; region['gain']=1
+    result=compose(original,layers,plan)
+    result['notice']='AI 遮挡建议仅供预览，确认后应用；位置、文字和图案不重绘。'
+    return result
 
 
 def process_overlay(payload,key,model,transport=None):

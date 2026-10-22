@@ -92,8 +92,9 @@ def prepare(payload):
     with session.lock:
         if len(session.records) >= 500: raise ValueError('本次图片数量超过 500 张')
         image = engine._decode(payload.get('image'))
+        if source: image,background=engine.prepare_source(image)
         if source and np.mean(image[:,:,3] < 250) <= .005:
-            return {'ok': True, 'usable': False, 'reason': '素材没有透明背景，请手动检查'}
+            return {'ok': True, 'usable': False, 'reason': '背景无法可靠分离，请用白底/透明素材或手动框选'}
         small, _ = engine._work_size(image, 1000)
         h, w = image.shape[:2]; sh, sw = small.shape[:2]
         sx, sy = sw/w, sh/h
@@ -149,7 +150,8 @@ def _candidates(source, target, deadline):
 def _read_original(record):
     # Reuse Pillow's EXIF and format handling from the normal engine.
     data='data:image/png;base64,'+base64.b64encode(record.path.read_bytes()).decode('ascii')
-    return engine._decode(data)
+    image=engine._decode(data)
+    return engine.prepare_source(image)[0] if record.source else image
 
 
 def match(payload):
