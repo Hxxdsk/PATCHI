@@ -15,6 +15,7 @@ import tempfile
 
 MODEL = contextvars.ContextVar('patchi_model', default=None)
 CANCEL = contextvars.ContextVar('patchi_cancel', default=None)
+FEATURES={'product','size','detail-caption','main-image','detail-current','garment-contour'}
 BASE = 'https://generativelanguage.googleapis.com/v1beta/'
 
 def next_daily_reset(now):
@@ -40,18 +41,23 @@ def next_daily_reset(now):
 class Pool:
     def __init__(self, directory, crypt):
         self.directory=Path(directory); self.crypt=crypt; self.lock=threading.RLock()
-        self.apis=[]; self.model='gemini-2.5-flash'; self.saved=False
+        self.feature_models={}; self.apis=[]; self.model='gemini-2.5-flash'; self.saved=False
         self.cooldowns={}; self.denied={}; self.usage={}; self.models={}; self.checks={}
         self.api_errors={}; self.cursor=0; self.revision=0; self.limits={}
         self.scan={'id':'','status':'idle','done':0,'total':0,'apisDone':0,'apisTotal':0}
         self.scan_cancel=threading.Event()
-        try: self.model=json.loads((self.directory/'ai_settings.json').read_text('utf-8'))['model']
+        try:
+            settings=json.loads((self.directory/'ai_settings.json').read_text('utf-8')); self.model=settings['model']
+            self.feature_models={k:v for k,v in settings.get('featureModels',{}).items() if k in FEATURES and isinstance(v,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',v)}
         except (OSError,ValueError,KeyError,TypeError): pass
         try:
             data=json.loads(self.crypt((self.directory/'ai_pool.dpapi').read_bytes(),False))
             self.apis=[{'id':a['id'],'name':a['name'],'key':a['key']} for a in data['apis']]
             self.model=data['model']; self.saved=True
         except (OSError, ValueError, RuntimeError, KeyError, TypeError): pass
+
+    def model_for(self,feature):
+        with self.lock:return self.feature_models.get(feature,self.model)
 
     def _remaining(self, identity, model, now=None):
         now=time.time() if now is None else now
@@ -83,17 +89,17 @@ class Pool:
         with self.lock:
             now=time.time(); apis=[]
             for a in self.apis:
-                identity=a['id']; usage=self.usage.get((identity,self.model),[]); recent=[u for u in usage if now-u[0]<60]
+                identity=a['id']; usage=self.usage.get((identity,self.model),[]); session_usage=[u for (api_id,_),records in self.usage.items() if api_id==identity for u in records]; recent=[u for u in usage if now-u[0]<60]
                 available=[m['id'] for m in self.models.get(identity,[]) if self._available(identity,m['id'])]
                 check=self.checks.get((identity,self.model),{})
                 apis.append({'id':identity,'name':a['name'],'cooldown':int(self._remaining(identity,self.model,now)+.999),
                     'limits':self.limits.get((identity,self.model)),'requests':len(recent),'tokens':sum(u[1] for u in recent),
-                    'sessionRequests':len(usage),'sessionTokens':sum(u[1] for u in usage),
+                    'sessionRequests':len(session_usage),'sessionTokens':sum(u[1] for u in session_usage),
                     'availableModels':available,'modelStatus':check.get('status','unchecked'),
                     'checkError':self.api_errors.get(identity,{}).get('message','')})
             details=self._details()
             return {'configured':bool(self.apis),'saved':self.saved,'model':self.model,'apis':apis,
-                'models':[m['id'] for m in details],'modelDetails':details,'revision':self.revision,'scan':dict(self.scan)}
+                'featureModels':dict(self.feature_models),'models':[m['id'] for m in details],'modelDetails':details,'revision':self.revision,'scan':dict(self.scan)}
 
     def configure(self,data):
         if not isinstance(data,dict): raise ValueError('配置格式错误')
@@ -101,6 +107,12 @@ class Pool:
             if 'revision' in data and data['revision']!=self.revision: raise ValueError('设置已变化，请重新打开 AI 设置')
             apis=[dict(a) for a in self.apis]; model=str(data.get('model') or self.model)
             if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model): raise ValueError('模型名称无效')
+            feature_models=dict(self.feature_models)
+            supplied=data.get('featureModels',{})
+            if not isinstance(supplied,dict):raise ValueError('功能模型设置无效')
+            for feature,value in supplied.items():
+                if feature not in FEATURES or not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',value):raise ValueError('功能模型名称无效')
+                feature_models[feature]=value
             if data.get('clear'): apis=[]
             if data.get('delete'): apis=[a for a in apis if a['id']!=data['delete']]
             key=str(data.get('key') or '').strip()
@@ -117,10 +129,10 @@ class Pool:
             if encrypted is not None:
                 tmp=target.with_suffix('.tmp'); tmp.write_bytes(encrypted); tmp.replace(target)
             else: target.unlink(missing_ok=True)
-            public=self.directory/'ai_settings.json'; tmp=public.with_suffix('.tmp'); tmp.write_text(json.dumps({'model':model}),encoding='utf-8'); tmp.replace(public)
+            public=self.directory/'ai_settings.json'; tmp=public.with_suffix('.tmp'); tmp.write_text(json.dumps({'model':model,'featureModels':feature_models}),encoding='utf-8'); tmp.replace(public)
             if [a['id'] for a in apis]!=[a['id'] for a in self.apis]:
                 self.scan_cancel.set(); self.scan={**self.scan,'status':'idle'}
-            self.apis=apis; self.model=model; self.saved=bool(encrypted); self.revision+=1
+            self.apis=apis; self.model=model; self.feature_models=feature_models; self.saved=bool(encrypted); self.revision+=1
             (self.directory/'gemini_api_key.dpapi').unlink(missing_ok=True)
             return self.public()
 
@@ -290,6 +302,7 @@ class Jobs:
             self.session=uuid.uuid4().hex
             return self.session
     def submit(self,data,dispatch,model):
+        if not isinstance(model,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model):raise ValueError('任务模型名称无效')
         identity=str(data.get('id','')); session=data.get('session')
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',identity): raise ValueError('任务标识无效')
         if session!=self.session: raise ValueError('本次工作已结束，请刷新界面')

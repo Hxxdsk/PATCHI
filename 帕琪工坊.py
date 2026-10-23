@@ -1582,7 +1582,7 @@ def normalize_detail_caption(raw):
 def gemini_recognize(data, product=False, detail=False):
     if not isinstance(data, dict): raise ValueError('请求格式错误')
     with gemini_lock:
-        key, model = bool(ai_pool.apis), data.get('model') or ai_pool.model
+        key, model = bool(ai_pool.apis), data.get('model') or ai_pool.model_for('detail-caption' if detail else 'product' if product else 'size')
     if not key: raise ValueError('请先在 Gemini API 设置中填写并保存 API Key')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model): raise ValueError('模型名称无效')
     mime = data.get('mimeType')
@@ -1642,7 +1642,7 @@ def normalize_garment_contour(answer):
 
 def gemini_garment_contour(request_data):
     with gemini_lock:
-        key,model=bool(ai_pool.apis),request_data.get('model') or ai_pool.model
+        key,model=bool(ai_pool.apis),request_data.get('model') or ai_pool.model_for('garment-contour')
     if not key:raise ValueError('请先通过 Gemini API 设置保存密钥')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model):raise ValueError('模型名称无效')
     click=request_data.get('click') or []
@@ -1720,7 +1720,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path.exists():return self.reply_json(404,{'error':'编辑器HTML不存在，请重新解压完整包'})
             return self.reply(200,path.read_bytes(),'text/html; charset=utf-8')
         if self.path == '/health':
-            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.22.14', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
+            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.23.15', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
         if self.path == '/auto/status':
             return self.reply_json(200, api_state())
         if self.path.startswith('/auto/diagnostic/'):
@@ -1782,9 +1782,10 @@ class Handler(BaseHTTPRequestHandler):
                 stop_flag=True
                 return self.reply_json(200,{'session':ai_jobs.reset()})
             if self.path == '/ai/jobs':
-                return self.reply_json(200,ai_jobs.submit(json.loads(self.body(limit=384*1024*1024)),dispatch_ai,ai_pool.model))
+                data=json.loads(self.body(limit=384*1024*1024))
+                return self.reply_json(200,ai_jobs.submit(data,dispatch_ai,data.get('model') or ai_pool.model_for(data.get('feature'))))
             if self.path == '/gemini/main-image':
-                return self.reply_json(200,dispatch_ai('main-image',json.loads(self.body(limit=384*1024*1024)),ai_pool.model))
+                return self.reply_json(200,dispatch_ai('main-image',json.loads(self.body(limit=384*1024*1024)),ai_pool.model_for('main-image')))
             if self.path == '/gemini/models/check':
                 self.body(limit=4096)
                 return self.reply_json(200, ai_pool.start_check())
@@ -1870,7 +1871,7 @@ if __name__=='__main__':
             current = json.load(response)
         if (current.get('service') == 'patchi-helper'
                 and current.get('automationProtocol') == AUTOMATION_PROTOCOL
-                and current.get('appVersion') == '2026.10.22.14'):
+                and current.get('appVersion') == '2026.10.23.15'):
             print('当前修复版已在运行，正在打开编辑器。')
             if os.getenv('PAQI_NO_BROWSER') != '1': webbrowser.open(f'http://{HOST}:{PORT}/')
             sys.exit(0)

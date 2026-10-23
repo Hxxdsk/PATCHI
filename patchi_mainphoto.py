@@ -1,4 +1,5 @@
 """Gemini vision plans occlusion/light; original logo pixels are composed locally."""
+import copy
 import base64
 import io
 import json
@@ -84,13 +85,21 @@ def api_image(image, edge):
 from patchi_ai_prompts import MAIN_SCHEMA as SCHEMA, MAIN_PROMPT
 
 
-def request_plan(original, composite, layers, key, model, transport=None):
-    parts = [{'text':MAIN_PROMPT}]
+def request_plan(original, composite, layers, key, model, transport=None, advanced=False):
+    from patchi_ai_prompts import ADVANCED_MAIN_PROMPT
+    parts = [{'text':ADVANCED_MAIN_PROMPT if advanced else MAIN_PROMPT}]
     parts += [api_image(original, 1400), api_image(composite, 1400)]
     for layer in layers:
         parts.append({'text':'REGION '+layer['id']+' — next images: ORIGINAL crop, then COMPOSITED crop. Coordinates are local to this full crop.'})
         parts += [api_image(original.crop(layer['box']), 1000), api_image(composite.crop(layer['box']), 1000)]
-    body = {'contents':[{'role':'user','parts':parts}], 'generationConfig':{'temperature':.1,'maxOutputTokens':12288,'responseMimeType':'application/json','responseSchema':SCHEMA}}
+    schema=copy.deepcopy(SCHEMA)
+    if advanced:
+        item=schema['properties']['regions']['items'];item['properties']['occlusionConfidence']={'type':'NUMBER'};item['properties']['fullyOccluded']={'type':'BOOLEAN'};item['properties']['occlusionEvidence']={'type':'STRING'};item['required']+=['occlusionConfidence','fullyOccluded','occlusionEvidence','warp','material','textureStrength']
+    body = {'contents':[{'role':'user','parts':parts}], 'generationConfig':{'temperature':.1,'maxOutputTokens':12288,'responseMimeType':'application/json','responseSchema':schema}}
+    return request_json(body,key,model,transport)
+
+
+def request_json(body,key,model,transport=None):
     encoded = json.dumps(body).encode('utf-8')
     if len(encoded) > 18*1024*1024: raise ValueError('AI 检查数据过大，请减少本张主图的 Logo 数量')
     if transport:
@@ -127,7 +136,8 @@ def fold_warp(tile, region):
     warp=region.get('warp',[])
     if not warp: return tile
     if not isinstance(warp,list) or len(warp)!=25: raise ValueError('AI 褶皱网格无效')
-    grid=np.array([[finite(v,-40,40,'AI 褶皱位移') for v in pair] if isinstance(pair,list) and len(pair)==2 else [float('nan')]*2 for pair in warp],dtype=np.float32).reshape(5,5,2)
+    limit=120 if region.get('_advanced') else 40
+    grid=np.array([[finite(v,-limit,limit,'AI 褶皱位移') for v in pair] if isinstance(pair,list) and len(pair)==2 else [float('nan')]*2 for pair in warp],dtype=np.float32).reshape(5,5,2)
     if not np.isfinite(grid).all(): raise ValueError('AI 褶皱坐标无效')
     grid-=grid.mean(axis=(0,1),keepdims=True)
     # Adjacent control cells must retain orientation and restrained local stretch.
@@ -136,10 +146,15 @@ def fold_warp(tile, region):
         for x in range(4):
             dx=(points[y,x+1]-points[y,x])/250; dy=(points[y+1,x]-points[y,x])/250
             determinant=dx[0]*dy[1]-dx[1]*dy[0]
-            if not .65<=determinant<=1.4: raise ValueError('AI 褶皱变形过强，已保留原贴标')
+            if not (.4 if region.get('_advanced') else .65)<=determinant<=(1.8 if region.get('_advanced') else 1.4): raise ValueError('AI 褶皱变形过强，已保留原贴标')
     import cv2
     bounds=tile.getchannel('A').getbbox(); x,y,r,b=bounds; w=r-x; h=b-y
     dense=cv2.resize(grid,(w,h),interpolation=cv2.INTER_LINEAR)
+    if region.get('_advanced'):
+        px=math.ceil(float(np.max(np.abs(grid[:,:,0])))*w/1000)+2;py=math.ceil(float(np.max(np.abs(grid[:,:,1])))*h/1000)+2
+        nx,ny=max(0,x-px),max(0,y-py);nr,nb=min(tile.width,r+px),min(tile.height,b+py)
+        expanded=cv2.copyMakeBorder(dense,py,py,px,px,cv2.BORDER_REPLICATE)
+        dense=expanded[py+ny-y:py+nb-y,px+nx-x:px+nr-x];x,y,r,b=nx,ny,nr,nb
     yy,xx=np.mgrid[y:b,x:r].astype(np.float32)
     mx,my=np.meshgrid(np.arange(tile.width,dtype=np.float32),np.arange(tile.height,dtype=np.float32))
     mx[y:b,x:r]=xx+dense[:,:,0]*w/1000; my[y:b,x:r]=yy+dense[:,:,1]*h/1000
@@ -202,8 +217,11 @@ def compose(original, layers, plan):
                 points.append((finite(pt[0],0,1000,'AI 遮挡坐标')*tw/1000,finite(pt[1],0,1000,'AI 遮挡坐标')*th/1000))
             painter.polygon(points, fill=255)
         hidden = (np.asarray(mask)>0)&footprint
-        if footprint.any() and hidden.sum()/footprint.sum()>.7:
-            raise ValueError('AI 建议遮盖超过 70% Logo，已保留原贴标；请人工确认位置后重试')
+        confidence=finite(region.get('occlusionConfidence',0),0,1,'AI 遮挡置信度')
+        maximum=.98 if region.get('_advanced') and confidence>=.85 else .7
+        if region.get('_advanced') and confidence>=.95 and region.get('fullyOccluded') is True and isinstance(region.get('occlusionEvidence'),str) and region['occlusionEvidence'].strip():maximum=1.
+        if footprint.any() and hidden.sum()/footprint.sum()>maximum:
+            raise ValueError('AI 建议遮盖超过 %d%% Logo 或置信度不足，已保留原贴标；请人工复核'%int(maximum*100))
         # Restore actual original foreground by zeroing only occluded overlay pixels.
         alpha=np.array(result.getchannel('A')); alpha[np.asarray(mask)>0]=0
         result.putalpha(Image.fromarray(alpha)); overlay.alpha_composite(result, box[:2])
@@ -220,21 +238,53 @@ def local_plan(layers):
              'material':'print','shadowDx':0,'shadowDy':0,'shadowBlur':0,'shadowOpacity':0} for l in layers]}
 
 
+def align_to_reference(payload,original,composite,key,model,transport):
+    from patchi_ai_prompts import ALIGN_SCHEMA,ALIGN_PROMPT
+    entries=payload['logos'];reference=payload.get('reference')
+    if not reference:return [dict(e) for e in entries],''
+    ref,refcomp,reflayers=prepare(reference)
+    mapping=[]
+    for index,e in enumerate(entries):
+        slot=e.get('referenceSlot',index)
+        if slot is None:slot=index
+        if not isinstance(slot,int) or isinstance(slot,bool) or not 0<=slot<len(reflayers):raise ValueError('首图 Logo 对应关系已变化，请重新批量贴标')
+        mapping.append({'id':e['id'],'referenceSlot':slot,'initial':{k:e[k]*1000/(original.width if k in ('x','w') else original.height) for k in ('x','y','w','h')}|{'rotation':e.get('rotation',0)}})
+    parts=[{'text':ALIGN_PROMPT},api_image(ref,1500),api_image(refcomp,1500),api_image(original,1500),api_image(composite,1500),{'text':json.dumps(mapping)}]
+    body={'contents':[{'role':'user','parts':parts}],'generationConfig':{'temperature':.1,'maxOutputTokens':4096,'responseMimeType':'application/json','responseSchema':ALIGN_SCHEMA}}
+    plan=request_json(body,key,model,transport);records=plan.get('placements')
+    if not isinstance(records,list) or len(records)!=len(entries):raise ValueError('AI 位置校准未覆盖全部 Logo，保留原贴标')
+    byid={e.get('id'):e for e in records if isinstance(e,dict)}
+    if len(byid)!=len(entries) or set(byid)!={e['id'] for e in entries}:raise ValueError('AI 位置校准标识不一致，保留原贴标')
+    adjusted=[];warnings=[]
+    for e in entries:
+        record=byid[e['id']];confidence=finite(record.get('confidence'),0,1,'AI 位置置信度');out=dict(e)
+        if confidence>=.75:
+            x=finite(record.get('x'),-200,1200,'AI 横坐标')*original.width/1000;y=finite(record.get('y'),-200,1200,'AI 纵坐标')*original.height/1000
+            w=finite(record.get('w'),1,2000,'AI 宽度')*original.width/1000;h=finite(record.get('h'),1,2000,'AI 高度')*original.height/1000;angle=finite(record.get('rotation'),-180,180,'AI 旋转')
+            center=math.hypot(x+w/2-e['x']-e['w']/2,y+h/2-e['y']-e['h']/2);turn=abs((angle-e.get('rotation',0)+180)%360-180)
+            if center>max(min(original.size)*.12,max(e['w'],e['h'])) or turn>40 or not .6<=w/e['w']<=1.5 or abs((h/w)/(e['h']/e['w'])-1)>.08:
+                warnings.append(e['id']+'：校准幅度异常，保留原位置')
+            else:out.update(x=x,y=y,w=w,h=w*e['h']/e['w'],rotation=angle)
+        else:warnings.append(e['id']+'：对应位置不确定，保留原位置')
+        adjusted.append(out)
+    return adjusted,str(plan.get('summary',''))[:800]+('；'+'；'.join(warnings) if warnings else '')
+
+
 def process(payload, key, model, transport=None):
-    original,composite,layers=prepare(payload)
-    mode=payload.get('assistantMode','ai')
-    if mode not in ('local','ai'): raise ValueError('主图辅助模式无效')
-    if mode=='local': return compose(original,layers,local_plan(layers))
-    if not key: raise ValueError('请先在 Gemini API 设置保存密钥，或使用本地光影辅助')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model): raise ValueError('Gemini 模型标识无效')
-    plan=request_plan(original,composite,layers,key,model,transport)
-    # Model inventing a deformation or cast shadow must not distort artwork.
-    for region in plan.get('regions',[]):
-        region['warp']=[]; region['material']='print'; region['shadowOpacity']=0
-        region['shadowDx']=0; region['shadowDy']=0; region['shadowBlur']=0
-        region['lightStrength']=.32; region['textureStrength']=.18; region['gain']=1
+    original,composite,layers=prepare(payload);mode=payload.get('assistantMode','ai')
+    if mode not in ('local','ai'):raise ValueError('主图辅助模式无效')
+    if mode=='local':return compose(original,layers,local_plan(layers))
+    if not key:raise ValueError('请先在 Gemini API 设置保存密钥，或使用本地光影融合')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model):raise ValueError('Gemini 模型标识无效')
+    entries,alignment=align_to_reference(payload,original,composite,key,model,transport)
+    # Rebuild from original logo pixels once, then ask about FINAL crop coordinates.
+    original,composite,layers=prepare({**payload,'logos':entries})
+    plan=request_plan(original,composite,layers,key,model,transport,advanced=True)
+    for region in plan.get('regions',[]):region['_advanced']=True
     result=compose(original,layers,plan)
-    result['notice']='AI 遮挡建议仅供预览，确认后应用；位置、文字和图案不重绘。'
+    result['placements']=[{k:e.get(k,0) for k in ('id','x','y','w','h','rotation')} for e in entries]
+    if alignment:result['summary']=alignment+'\n'+result['summary']
+    result['model']=model;result['notice']='AI 已结合原图生成真实贴合建议；请复核领口、抽绳、边缘与颜色图定位后应用。'
     return result
 
 
