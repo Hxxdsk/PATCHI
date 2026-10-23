@@ -1,6 +1,8 @@
 """Shared Gemini configuration, quota-aware failover and idempotent local jobs."""
 import contextvars
 import hashlib
+import io
+import socket
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,62 @@ import tempfile
 MODEL = contextvars.ContextVar('patchi_model', default=None)
 CANCEL = contextvars.ContextVar('patchi_cancel', default=None)
 FEATURES={'product','size','detail-caption','main-image','detail-current','garment-contour'}
+REPORT = contextvars.ContextVar('patchi_report', default=None)
+REQUEST_SECONDS = 75
+REQUEST_SLOTS = threading.BoundedSemaphore(4)
+
+class AIRequestError(RuntimeError):
+    def __init__(self,code,message):super().__init__(message);self.code=code
+
+def report(kind,message,**fields):
+    callback=REPORT.get()
+    if callback:callback({'kind':kind,'message':message,**fields})
+
+def check_cancel():
+    cancel=CANCEL.get()
+    if cancel and cancel.is_set():raise AIRequestError('canceled','任务已停止')
+
+def interrupt_response(response):
+    try:
+        sock=getattr(getattr(getattr(response,'fp',None),'raw',None),'_sock',None)
+        if sock:sock.shutdown(socket.SHUT_RDWR)
+    except (OSError,ValueError,AttributeError):pass
+
+def request_bytes(req,timeout=REQUEST_SECONDS,limit=4*1024*1024):
+    """Cancelable local wait around bounded urllib workers. Never resend ambiguous requests."""
+    started=time.monotonic()
+    while not REQUEST_SLOTS.acquire(timeout=.1):
+        check_cancel()
+        if time.monotonic()-started>15:raise AIRequestError('transport_busy','已有请求仍在结束连接，请稍后重试；当前图未改动')
+        report('waiting','等待可用 API 连接槽位')
+    done=threading.Event();state={};context=contextvars.copy_context()
+    def work():
+        try:
+            check_cancel()
+            with urllib.request.urlopen(req,timeout=timeout) as response:
+                state['response']=response;state['raw']=response.read(limit+1)
+        except urllib.error.HTTPError as exc:
+            state['response']=exc
+            try:raw=exc.read(65536)
+            except (OSError,ValueError):raw=b''
+            finally:exc.close()
+            state['error']=urllib.error.HTTPError(req.full_url,exc.code,exc.reason,exc.headers,io.BytesIO(raw))
+        except Exception as exc:state['error']=exc
+        finally:done.set();REQUEST_SLOTS.release()
+    threading.Thread(target=lambda:context.run(work),daemon=True).start()
+    deadline=time.monotonic()+timeout
+    while not done.wait(.1):
+        try:check_cancel()
+        except AIRequestError:
+            interrupt_response(state.get('response'));raise
+        if time.monotonic()>deadline:
+            interrupt_response(state.get('response'));raise AIRequestError('timeout','API 响应超时，已停止本地等待；为避免重复计费，本次不自动重发')
+    check_cancel()
+    if 'error' in state:raise state['error']
+    raw=state['raw']
+    if len(raw)>limit:raise AIRequestError('response_size','AI 返回数据过大，当前图保留')
+    return raw
+
 BASE = 'https://generativelanguage.googleapis.com/v1beta/'
 
 def next_daily_reset(now):
@@ -43,7 +101,7 @@ class Pool:
         self.directory=Path(directory); self.crypt=crypt; self.lock=threading.RLock()
         self.feature_models={}; self.apis=[]; self.model='gemini-2.5-flash'; self.saved=False
         self.cooldowns={}; self.denied={}; self.usage={}; self.models={}; self.checks={}
-        self.api_errors={}; self.cursor=0; self.revision=0; self.limits={}
+        self.last_issues={}; self.api_errors={}; self.cursor=0; self.revision=0; self.limits={}
         self.scan={'id':'','status':'idle','done':0,'total':0,'apisDone':0,'apisTotal':0}
         self.scan_cancel=threading.Event()
         try:
@@ -96,7 +154,7 @@ class Pool:
                     'limits':self.limits.get((identity,self.model)),'requests':len(recent),'tokens':sum(u[1] for u in recent),
                     'sessionRequests':len(session_usage),'sessionTokens':sum(u[1] for u in session_usage),
                     'availableModels':available,'modelStatus':check.get('status','unchecked'),
-                    'checkError':self.api_errors.get(identity,{}).get('message','')})
+                    'lastIssue':self.last_issues.get(identity),'checkError':self.api_errors.get(identity,{}).get('message','')})
             details=self._details()
             return {'configured':bool(self.apis),'saved':self.saved,'model':self.model,'apis':apis,
                 'featureModels':dict(self.feature_models),'models':[m['id'] for m in details],'modelDetails':details,'revision':self.revision,'scan':dict(self.scan)}
@@ -248,90 +306,149 @@ class Pool:
 
     def generate(self,body,model=None):
         model=MODEL.get() or model or self.model
-        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model): raise ValueError('模型名称无效')
-        encoded=json.dumps(body,ensure_ascii=False).encode(); attempted=set(); deadline=time.time()+125
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model):raise ValueError('模型名称无效')
+        encoded=json.dumps(body,ensure_ascii=False).encode();attempted=set();deadline=time.monotonic()+90
+        attempt=0;waited=0;compatible=False;last_api=None
         while True:
-            cancel=CANCEL.get()
-            if cancel and cancel.is_set(): raise RuntimeError('任务已取消')
+            check_cancel()
+            if time.monotonic()>deadline:raise AIRequestError('timeout','本阶段等待超时，当前图未改动；可换模型或稍后重试')
             with self.lock:
                 apis=[dict(a) for a in self.apis]
                 if apis:
-                    start=self.cursor%len(apis); apis=apis[start:]+apis[:start]
-                ready=[]; waiting=[]
+                    start=self.cursor%len(apis);apis=apis[start:]+apis[:start]
+                ready=[];waiting=[]
                 for a in apis:
-                    if not self._offered(a,model): continue
+                    if not self._offered(a,model):continue
                     remaining=self._remaining(a['id'],model)
-                    if remaining>0: waiting.append(remaining)
-                    elif a['id'] not in attempted: ready.append(a)
+                    if remaining>0:waiting.append(remaining)
+                    elif a['id'] not in attempted:ready.append(a)
             if not ready:
-                if waiting and min(waiting)<=120 and cancel and time.time()<deadline:
-                    cancel.wait(min(1,min(waiting))); attempted.clear(); continue
-                raise RuntimeError('所选模型没有可用 API'+('，约 %d 秒后重试'%max(1,min(waiting)) if waiting else '，请检测全部 API 后选择可用模型'))
-            a=ready[0]; identity=a['id']; attempted.add(identity)
-            req=urllib.request.Request(BASE+'models/'+model+':generateContent',data=encoded,
-                headers={'Content-Type':'application/json','x-goog-api-key':a['key']})
+                if waiting and min(waiting)<=15-waited and CANCEL.get():
+                    seconds=min(waiting);until=time.time()+seconds
+                    report('cooldown','所有兼容 API 暂时限流，短暂冷却后继续',waitUntil=until,model=model)
+                    while time.time()<until:
+                        check_cancel();CANCEL.get().wait(min(.2,until-time.time()))
+                    waited+=seconds;attempted.clear();continue
+                report('unavailable','没有可用 API；停止本批次，保留原贴标',model=model)
+                raise AIRequestError('no_api','所选模型没有可用 API'+('，约 %d 秒后再试'%max(1,min(waiting)) if waiting else '；请查看 API 实时记录或选择其他视觉模型'))
+            a=ready[0];identity=a['id'];attempt+=1
+            if attempt>len(apis)+2:raise AIRequestError('no_api','API 轮询已达到本阶段上限，请稍后重试')
+            attempted.add(identity)
+            if last_api is not None:report('switch',('重试 ' if last_api==identity else '轮询切换到 ')+a['name']+'，保持模型和图片不变',api=a['name'],apiId=identity,model=model,attempt=attempt)
+            last_api=identity
+            report('request','已提交 '+a['name']+'，等待模型响应',api=a['name'],apiId=identity,model=model,attempt=attempt,requestStarted=time.time(),waitUntil=None)
+            req=urllib.request.Request(BASE+'models/'+model+':generateContent',data=encoded,headers={'Content-Type':'application/json','x-goog-api-key':a['key']})
             try:
-                with urllib.request.urlopen(req,timeout=150) as r:
-                    raw=r.read(4*1024*1024+1)
-                    if len(raw)>4*1024*1024: raise RuntimeError('AI 返回数据过大')
-                    response=json.loads(raw)
+                raw=request_bytes(req);response=json.loads(raw)
                 tokens=int(response.get('usageMetadata',{}).get('totalTokenCount',0))
                 with self.lock:
-                    self.usage.setdefault((identity,model),[]).append((time.time(),tokens)); self.cursor=(next((i for i,x in enumerate(self.apis) if x['id']==identity),0)+1)%max(1,len(self.apis))
-                    self.checks[(identity,model)]={'status':'available','checkedAt':time.time()}
+                    self.usage.setdefault((identity,model),[]).append((time.time(),tokens));self.cursor=(next((i for i,x in enumerate(self.apis) if x['id']==identity),0)+1)%max(1,len(self.apis))
+                    self.checks[(identity,model)]={'status':'available','checkedAt':time.time()};self.last_issues.pop(identity,None)
+                report('response','已收到 '+a['name']+' 响应，正在检查结果',api=a['name'],apiId=identity,model=model,requestStarted=None)
                 return response
             except urllib.error.HTTPError as exc:
-                if exc.code==429: self._quota_error(exc,identity,model); continue
-                if exc.code in (401,403,404):
+                if exc.code==429:
+                    result=self._quota_error(exc,identity,model);message='额度为零/耗尽' if result.get('zeroQuota') else '达到速率或当日额度限制'
+                    message=a['name']+'：'+message+'，正在检查其他 API'
+                elif exc.code in (401,403,404):
+                    reason={401:'API 认证失效',403:'此模型权限或地区受限',404:'此 API 不提供所选模型'}[exc.code];message=a['name']+'：'+reason+'（HTTP '+str(exc.code)+'）'
                     with self.lock:
-                        self.denied[(identity,model)]=time.time()+300
-                        self.checks[(identity,model)]={'status':'unavailable','checkedAt':time.time()}
-                    continue
-                raise RuntimeError('AI 请求被拒绝（HTTP %d），当前图保留'%exc.code) from None
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-                raise RuntimeError('AI 连接中断或返回无效；本次不自动重发，请检查后重试') from None
+                        self.denied[(identity,model)]=time.time()+300;self.checks[(identity,model)]={'status':'unavailable','checkedAt':time.time()}
+                        if exc.code==401:self.api_errors[identity]={'message':'API 认证失效，请更新密钥','retryAt':time.time()+300}
+                elif exc.code==400:
+                    try:error=json.loads(exc.read(65536)).get('error',{});detail=str(error.get('message','')).lower()
+                    except (ValueError,OSError):detail=''
+                    if not compatible and 'responseSchema' in body.get('generationConfig',{}) and any(word in detail for word in ('schema','structured','generationconfig','responsemime','json mode')):
+                        body=json.loads(json.dumps(body));schema=body['generationConfig'].pop('responseSchema',{})
+                        body['generationConfig'].pop('responseMimeType',None);body['contents'][-1]['parts'].append({'text':'Return JSON only, following this output contract: '+json.dumps(schema)})
+                        encoded=json.dumps(body,ensure_ascii=False).encode();compatible=True;attempted.discard(identity)
+                        report('compatibility',a['name']+' 拒绝结构化约束，改用兼容 JSON 提示重试',api=a['name'],apiId=identity,model=model);continue
+                    message='所选模型拒绝图片或请求格式（HTTP 400），请更换支持视觉与 JSON 输出的模型'
+                    with self.lock:self.last_issues[identity]={'model':model,'code':400,'message':message,'at':time.time()}
+                    report('invalid_request',message,api=a['name'],apiId=identity,model=model)
+                    raise AIRequestError('unsupported_model',message) from None
+                elif exc.code in (500,502,503,504):
+                    message=a['name']+'：服务端暂时失败（HTTP '+str(exc.code)+'），检查其他 API'
+                    with self.lock:self.cooldowns[(identity,model)]=time.time()+10
+                else:
+                    message='API 拒绝请求（HTTP %d），当前图保留'%exc.code
+                    report('api_error',message,api=a['name'],apiId=identity,model=model)
+                    raise AIRequestError('api_error',message) from None
+                with self.lock:self.last_issues[identity]={'model':model,'code':exc.code,'message':message,'at':time.time()}
+                report('api_error',message,api=a['name'],apiId=identity,model=model,code=exc.code)
+            except AIRequestError:raise
+            except (urllib.error.URLError,TimeoutError,OSError,ValueError):
+                message='API 连接超时、中断或返回无效；本次不自动重发，请检查后重试'
+                report('network_error',message,api=a['name'],apiId=identity,model=model)
+                raise AIRequestError('network_error',message) from None
 
 class Jobs:
     def __init__(self):
-        self.lock=threading.RLock(); self.items={}; self.slots=threading.Semaphore(2); self.storage=tempfile.TemporaryDirectory(prefix='patchi_ai_jobs_'); self.session=uuid.uuid4().hex
+        self.lock=threading.RLock();self.items={};self.tombstones={};self.slots=threading.Semaphore(2);self.storage=tempfile.TemporaryDirectory(prefix='patchi_ai_jobs_');self.session=uuid.uuid4().hex
     def reset(self):
         with self.lock:
-            for j in self.items.values(): j['cancel'].set()
-            self.items.clear();
-            for path in Path(self.storage.name).glob('*.json'): path.unlink(missing_ok=True)
-            self.session=uuid.uuid4().hex
-            return self.session
+            for j in self.items.values():j['cancel'].set()
+            self.items.clear();self.tombstones.clear()
+            for path in Path(self.storage.name).glob('*.json'):path.unlink(missing_ok=True)
+            self.session=uuid.uuid4().hex;return self.session
+    def event(self,job,data):
+        with self.lock:
+            if job['status'] in ('canceled','done','failed'):return
+            now=time.time()
+            if job['events'] and now-job['events'][-1]['at']<1 and all(job['events'][-1].get(k)==v for k,v in data.items()):return
+            if data.get('kind')=='stage':job['progress'].update(requestStarted=None,waitUntil=None,api=None,apiId=None)
+            elif data.get('kind') in ('response','api_error','network_error','invalid_request','cooldown','unavailable','done','failed','canceled'):job['progress']['requestStarted']=None
+            event={'at':now,**data};job['events'].append(event);job['events']=job['events'][-60:]
+            job['progress'].update(event);job['updatedAt']=event['at']
+    def cancel(self,identity,session):
+        if session!=self.session:raise ValueError('本次工作已结束')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',identity):raise ValueError('任务标识无效')
+        with self.lock:
+            self.tombstones={k:v for k,v in self.tombstones.items() if v>time.time()}
+            if len(self.tombstones)>=512:self.tombstones.pop(next(iter(self.tombstones)))
+            self.tombstones[identity]=time.time()+600
+            job=self.items.get(identity)
+            if job and job['status'] not in ('done','failed','canceled'):
+                self.event(job,{'kind':'canceled','message':'用户停止：立即结束本地等待，迟到结果不会覆盖图片'})
+                job['cancel'].set();job['status']='canceled';job['error']='任务已停止';job['errorCode']='canceled'
+            return self.get(identity) if job else {'id':identity,'session':session,'status':'canceled','errorCode':'canceled','error':'任务已停止'}
     def submit(self,data,dispatch,model):
         if not isinstance(model,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model):raise ValueError('任务模型名称无效')
-        identity=str(data.get('id','')); session=data.get('session')
-        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',identity): raise ValueError('任务标识无效')
-        if session!=self.session: raise ValueError('本次工作已结束，请刷新界面')
+        identity=str(data.get('id',''));session=data.get('session')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',identity):raise ValueError('任务标识无效')
+        if session!=self.session:raise ValueError('本次工作已结束，请刷新界面')
         digest=hashlib.sha256(json.dumps(data,sort_keys=True,separators=(',',':')).encode()).hexdigest()
         with self.lock:
             if identity in self.items:
-                if self.items[identity]['digest']!=digest: raise ValueError('任务标识与图片不一致')
+                if self.items[identity]['digest']!=digest:raise ValueError('任务标识与图片不一致')
                 return self.get(identity)
-            if len(self.items)>=300: raise ValueError('本次 AI 任务数量已达上限，请重新启动工坊')
-            job={'id':identity,'digest':digest,'session':session,'status':'queued','model':model,'cancel':threading.Event()}
-            self.items[identity]=job
+            if self.tombstones.get(identity,0)>time.time():return {'id':identity,'session':session,'status':'canceled','errorCode':'canceled','error':'任务已停止'}
+            if len(self.items)>=300:raise ValueError('本次 AI 任务数量已达上限，请重新启动工坊')
+            job={'id':identity,'digest':digest,'session':session,'status':'queued','model':model,'cancel':threading.Event(),'events':[],'progress':{},'createdAt':time.time(),'updatedAt':time.time()}
+            self.items[identity]=job;self.event(job,{'kind':'queued','phase':'排队','message':'任务已登记，等待处理槽位'})
         def run():
-            mt=MODEL.set(model); ct=CANCEL.set(job['cancel'])
+            mt=MODEL.set(model);ct=CANCEL.set(job['cancel']);rt=REPORT.set(lambda event:self.event(job,event));acquired=False
             try:
-                self.slots.acquire();
-                if job['cancel'].is_set(): raise RuntimeError('任务已取消')
-                job['status']='running'; result=dispatch(data['feature'],data['payload'],model)
-                if job['cancel'].is_set(): job['status']='canceled'
-                else:
-                    path=Path(self.storage.name)/(identity+'.json'); path.write_text(json.dumps(result,ensure_ascii=False),encoding='utf-8'); job['resultPath']=str(path); job['status']='done'
-            except Exception as e:
-                job['error']=str(e); job['status']='canceled' if job['cancel'].is_set() else 'failed'
-            finally: self.slots.release(); MODEL.reset(mt); CANCEL.reset(ct)
-        threading.Thread(target=run,daemon=True).start()
-        return self.get(identity)
+                while not self.slots.acquire(timeout=.1):check_cancel()
+                acquired=True;check_cancel()
+                with self.lock:job['status']='running'
+                report('stage','开始处理',phase='准备图片');result=dispatch(data['feature'],data['payload'],model);check_cancel()
+                with self.lock:
+                    check_cancel();path=Path(self.storage.name)/(identity+'.json');path.write_text(json.dumps(result,ensure_ascii=False),encoding='utf-8');job['resultPath']=str(path)
+                    report('done','任务已完成');job['status']='done'
+            except Exception as exc:
+                with self.lock:
+                    if job['cancel'].is_set():job['status']='canceled';job['error']='任务已停止';job['errorCode']='canceled'
+                    else:
+                        report('failed',str(exc));job['error']=str(exc);job['errorCode']=getattr(exc,'code','processing_error');job['status']='failed'
+            finally:
+                if acquired:self.slots.release()
+                REPORT.reset(rt);MODEL.reset(mt);CANCEL.reset(ct)
+        threading.Thread(target=run,daemon=True).start();return self.get(identity)
     def get(self,identity):
         with self.lock:
             job=self.items.get(identity)
-            if not job: raise ValueError('任务不存在')
-            result={k:v for k,v in job.items() if k not in ('cancel','digest','resultPath')}
-            if job.get('resultPath'): result['result']=json.loads(Path(job['resultPath']).read_text('utf-8'))
+            if not job:raise ValueError('任务不存在')
+            result={k:v for k,v in job.items() if k not in ('cancel','digest','resultPath')};result['events']=[dict(e) for e in job['events']];result['progress']=dict(job['progress']);result['elapsed']=round((job['updatedAt'] if job['status'] in ('done','failed','canceled') else time.time())-job['createdAt'],1)
+            if job.get('resultPath') and job['status']=='done':result['result']=json.loads(Path(job['resultPath']).read_text('utf-8'))
             return result

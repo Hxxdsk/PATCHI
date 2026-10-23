@@ -9,6 +9,7 @@ import urllib.request
 import urllib.error
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter, ImageDraw
+from patchi_ai import report, check_cancel
 
 MAX_PIXELS = 32_000_000
 MAX_FILE = 128 * 1024 * 1024
@@ -43,12 +44,14 @@ def finite(value, low, high, name):
 
 
 def prepare(payload):
+    check_cancel()
     original = decode_image(payload.get('original'))
     w, h = original.size
     logos = payload.get('logos')
     if not isinstance(logos, list) or not 1 <= len(logos) <= MAX_LOGOS: raise ValueError('每张主图需要 1–8 个 Logo')
     ids = set(); layers = []
     for entry in logos:
+        check_cancel()
         if not isinstance(entry, dict): raise ValueError('Logo 数据错误')
         identity = str(entry.get('id', ''))
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', identity) or identity in ids: raise ValueError('Logo 标识重复或无效')
@@ -124,11 +127,13 @@ def request_json(body,key,model,transport=None):
         candidate = data['candidates'][0]
         text = ''.join(part.get('text','') for part in candidate['content']['parts'] if not part.get('thought'))
         text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip())
+        if not text.startswith('{') and '{' in text and '}' in text:text=text[text.find('{'):text.rfind('}')+1]
         result = json.loads(text)
         if not isinstance(result, dict): raise ValueError()
         return result
     except (KeyError, IndexError, TypeError, ValueError):
-        raise RuntimeError('Gemini 未返回有效检查结果，本图保留手动贴标') from None
+        reason=str(data.get('candidates',[{}])[0].get('finishReason','')) if isinstance(data,dict) and data.get('candidates') else ''
+        raise RuntimeError('Gemini 未返回有效检查结果'+('（输出被截断，请减少本图 Logo 数量或更换模型）' if reason=='MAX_TOKENS' else '（请查看模型是否支持视觉与 JSON 输出）')+'，本图保留手动贴标') from None
 
 
 def fold_warp(tile, region):
@@ -176,7 +181,14 @@ def compose(original, layers, plan):
     for layer in layers:
         region = records.get(layer['id'])
         if not region: raise ValueError('AI 遗漏 Logo，请重试')
-        box=layer['box']; tile=fold_warp(layer['tile'],region); tw,th=tile.size
+        check_cancel()
+        box=layer['box']
+        try:tile=fold_warp(layer['tile'],region)
+        except ValueError as exc:
+            if not region.get('_recover'):raise
+            tile=layer['tile'];region['note']=str(region.get('note',''))+'；褶皱建议无效，已保留 Logo 原形'
+            report('warning','模型褶皱建议无效，保留 Logo 原形继续合成')
+        tw,th=tile.size
         strength = finite(region.get('lightStrength'), 0, 1, 'AI 光照强度')
         gain = finite(region.get('gain'), .8, 1.2, 'AI 明度')
         # Two spatial scales keep fold relief instead of a flat color wash.
@@ -220,7 +232,10 @@ def compose(original, layers, plan):
         confidence=finite(region.get('occlusionConfidence',0),0,1,'AI 遮挡置信度')
         maximum=.98 if region.get('_advanced') and confidence>=.85 else .7
         if region.get('_advanced') and confidence>=.95 and region.get('fullyOccluded') is True and isinstance(region.get('occlusionEvidence'),str) and region['occlusionEvidence'].strip():maximum=1.
-        if footprint.any() and hidden.sum()/footprint.sum()>maximum:
+        if footprint.any() and hidden.sum()/footprint.sum()>maximum and region.get('_recover'):
+            mask=Image.new('L',tile.size);hidden=np.zeros_like(footprint);region['note']=str(region.get('note',''))+'；遮挡范围异常，未应用此擦除建议，请用保护画笔复核'
+            report('warning','模型建议的遮挡范围异常，保留原标识，仅应用可用光影')
+        elif footprint.any() and hidden.sum()/footprint.sum()>maximum:
             raise ValueError('AI 建议遮盖超过 %d%% Logo 或置信度不足，已保留原贴标；请人工复核'%int(maximum*100))
         # Restore actual original foreground by zeroing only occluded overlay pixels.
         alpha=np.array(result.getchannel('A')); alpha[np.asarray(mask)>0]=0
@@ -271,25 +286,42 @@ def align_to_reference(payload,original,composite,key,model,transport):
 
 
 def process(payload, key, model, transport=None):
-    original,composite,layers=prepare(payload);mode=payload.get('assistantMode','ai')
+    report('stage','正在读取主图与 Logo 原始像素',phase='准备图片');original,composite,layers=prepare(payload);mode=payload.get('assistantMode','ai')
     if mode not in ('local','ai'):raise ValueError('主图辅助模式无效')
-    if mode=='local':return compose(original,layers,local_plan(layers))
+    if mode=='local':
+        report('stage','本地光影融合，不调用 API',phase='本地合成');return compose(original,layers,local_plan(layers))
     if not key:raise ValueError('请先在 Gemini API 设置保存密钥，或使用本地光影融合')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model):raise ValueError('Gemini 模型标识无效')
+    report('stage','参考首图校准位置和角度' if payload.get('reference') else '首图沿用用户摆位，准备遮挡与光影检查',phase='首图定位' if payload.get('reference') else '准备贴合')
     entries,alignment=align_to_reference(payload,original,composite,key,model,transport)
     # Rebuild from original logo pixels once, then ask about FINAL crop coordinates.
     original,composite,layers=prepare({**payload,'logos':entries})
+    check_cancel();report('stage','检查最终摆位的衣领、抽绳、边缘和褶皱',phase='遮挡与光影')
     plan=request_plan(original,composite,layers,key,model,transport,advanced=True)
-    for region in plan.get('regions',[]):region['_advanced']=True
+    for region in plan.get('regions',[]):
+        region['_advanced']=True;region['_recover']=True
+        defaults=local_plan(layers)['regions'][0]
+        for name,low,high in [('lightStrength',0,1),('textureStrength',0,.65),('gain',.8,1.2),('shadowDx',-15,15),('shadowDy',-15,15),('shadowBlur',0,15),('shadowOpacity',0,.2),('occlusionConfidence',0,1)]:
+            value=region.get(name,defaults.get(name,0))
+            if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value):region[name]=max(low,min(high,value))
+            else:region[name]=defaults.get(name,0)
+        material=str(region.get('material','print')).lower().strip();region['material']=material if material in ('print','woven','embroidered','patch') else 'print'
+        warp=region.get('warp',[])
+        if isinstance(warp,list) and len(warp)==5 and all(isinstance(row,list) and len(row)==5 and isinstance(row[0],list) for row in warp):region['warp']=[pair for row in warp for pair in row]
+        if not isinstance(region.get('occlusions'),list):region['occlusions']=[];region['note']=str(region.get('note',''))+'；未返回可靠遮挡轮廓，保留原标识'
+    report('stage','用原始 Logo 像素合成，保留原图其他区域',phase='合成预览')
     result=compose(original,layers,plan)
     result['placements']=[{k:e.get(k,0) for k in ('id','x','y','w','h','rotation')} for e in entries]
     if alignment:result['summary']=alignment+'\n'+result['summary']
+    notes='；'.join(r['note'] for r in result['regions'] if r.get('note'))
+    if notes:result['summary']+='\n'+notes
     result['model']=model;result['notice']='AI 已结合原图生成真实贴合建议；请复核领口、抽绳、边缘与颜色图定位后应用。'
     return result
 
 
 def process_overlay(payload,key,model,transport=None):
     """Refine only a transparent replacement layer, never regenerate the source page."""
+    report('stage','读取本页叠加图层',phase='准备当前详情页');check_cancel()
     original=decode_image(payload.get('original')); overlay=decode_image(payload.get('overlay'))
     if overlay.size!=original.size: raise ValueError('本页图层尺寸不一致')
     import cv2
@@ -314,4 +346,5 @@ def process_overlay(payload,key,model,transport=None):
         layers.append({'id':'region_'+str(i),'name':'本页标识 '+str(i),'box':box,'tile':tile})
     if not layers or len(layers)>12: raise ValueError('本页图层过于分散，请人工调整后再处理')
     composite=original.copy(); composite.alpha_composite(overlay)
+    report('stage','检查当前详情页的遮挡与光影',phase='详情页 AI 检查')
     return compose(original,layers,request_plan(original,composite,layers,key,model,transport))

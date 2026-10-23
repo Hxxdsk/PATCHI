@@ -1674,6 +1674,8 @@ def dispatch_ai(feature,payload,model):
     from patchi_mainphoto import process, process_overlay
     if feature=='main-image': return process(payload,True,model,lambda body:ai_pool.generate(body,model))
     if feature=='detail-current': return process_overlay(payload,True,model,lambda body:ai_pool.generate(body,model))
+    if feature in ('product','size','detail-caption'):return gemini_recognize({**payload,'model':model},product=feature=='product',detail=feature=='detail-caption')
+    if feature=='garment-contour':return gemini_garment_contour({**payload,'model':model})
     raise ValueError('未知 AI 任务')
 
 class Handler(BaseHTTPRequestHandler):
@@ -1720,7 +1722,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path.exists():return self.reply_json(404,{'error':'编辑器HTML不存在，请重新解压完整包'})
             return self.reply(200,path.read_bytes(),'text/html; charset=utf-8')
         if self.path == '/health':
-            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.23.15', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
+            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.23.16', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
         if self.path == '/auto/status':
             return self.reply_json(200, api_state())
         if self.path.startswith('/auto/diagnostic/'):
@@ -1781,6 +1783,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply_json(403,{'error':'仅启动器可开始新工作'})
                 stop_flag=True
                 return self.reply_json(200,{'session':ai_jobs.reset()})
+            if self.path.startswith('/ai/jobs/') and self.path.endswith('/cancel'):
+                data=json.loads(self.body(limit=4096));return self.reply_json(200,ai_jobs.cancel(self.path.split('/')[-2],data.get('session')))
             if self.path == '/ai/jobs':
                 data=json.loads(self.body(limit=384*1024*1024))
                 return self.reply_json(200,ai_jobs.submit(data,dispatch_ai,data.get('model') or ai_pool.model_for(data.get('feature'))))
@@ -1871,7 +1875,7 @@ if __name__=='__main__':
             current = json.load(response)
         if (current.get('service') == 'patchi-helper'
                 and current.get('automationProtocol') == AUTOMATION_PROTOCOL
-                and current.get('appVersion') == '2026.10.23.15'):
+                and current.get('appVersion') == '2026.10.23.16'):
             print('当前修复版已在运行，正在打开编辑器。')
             if os.getenv('PAQI_NO_BROWSER') != '1': webbrowser.open(f'http://{HOST}:{PORT}/')
             sys.exit(0)
