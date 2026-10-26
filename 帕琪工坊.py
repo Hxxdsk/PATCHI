@@ -1495,6 +1495,8 @@ from patchi_ai import Pool, Jobs
 from patchi_ai_prompts import *
 ai_pool = Pool(GEMINI_DIR, dpapi_transform)
 ai_jobs = Jobs()
+from patchi_comfy import Bridge
+comfy_bridge = Bridge(APP_DATA / '帕琪工坊')
 
 def set_gemini_settings(data):
     return ai_pool.configure(data)
@@ -1671,8 +1673,8 @@ if gemini_key and not ai_pool.apis:
     ai_pool.configure({'key':gemini_key,'model':gemini_model,'remember':gemini_saved,'name':'原有 API'})
 
 def dispatch_ai(feature,payload,model):
-    from patchi_mainphoto import process, process_overlay
-    if feature=='main-image': return process(payload,True,model,lambda body:ai_pool.generate(body,model))
+    from patchi_mainphoto import process_overlay
+    if feature=='main-image': raise ValueError('制作主图 AI 已移除，请使用主页外部批量贴标')
     if feature=='detail-current': return process_overlay(payload,True,model,lambda body:ai_pool.generate(body,model))
     if feature in ('product','size','detail-caption'):return gemini_recognize({**payload,'model':model},product=feature=='product',detail=feature=='detail-caption')
     if feature=='garment-contour':return gemini_garment_contour({**payload,'model':model})
@@ -1708,6 +1710,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get('Host', '').split(':')[0] not in ('127.0.0.1','localhost'):
             return self.reply_json(403, {'error':'拒绝非本机 Host'})
+        if self.path in ('/external','/external.js','/external.css','/comfy/tutorial'):
+            names={'/external':('patchi_external.html','text/html; charset=utf-8'),'/external.js':('patchi_external.js','text/javascript; charset=utf-8'),'/external.css':('patchi_external.css','text/css; charset=utf-8'),'/comfy/tutorial':('ComfyUI部署教程.html','text/html; charset=utf-8')}
+            name,mime=names[self.path];return self.reply(200,(Path(__file__).parent/name).read_bytes(),mime)
+        if self.path == '/comfy/settings':return self.reply_json(200,comfy_bridge.settings())
+        if self.path.startswith('/comfy/jobs/'):
+            try:return self.reply_json(200,comfy_bridge.get(self.path.rsplit('/',1)[-1],ai_jobs.session))
+            except ValueError as exc:return self.reply_json(404,{'error':str(exc)})
+        if self.path.startswith('/comfy/result/'):
+            try:
+                _,_,_,identity,index=self.path.split('/');return self.reply(200,comfy_bridge.result(identity,int(index),ai_jobs.session),'image/png')
+            except (ValueError,OSError) as exc:return self.reply_json(404,{'error':str(exc)})
         if self.path.startswith('/ai/jobs/'):
             try: return self.reply_json(200, ai_jobs.get(self.path.rsplit('/',1)[-1]))
             except ValueError as exc:return self.reply_json(404,{'error':str(exc)})
@@ -1722,7 +1735,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path.exists():return self.reply_json(404,{'error':'编辑器HTML不存在，请重新解压完整包'})
             return self.reply(200,path.read_bytes(),'text/html; charset=utf-8')
         if self.path == '/health':
-            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.23.16', 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
+            return self.reply_json(200, {'ok': True, 'geminiRecognition':True, 'productInfoRecognition':True, 'detailCaptionGeneration':True, 'garmentContourRecognition':True, 'samePhotoReplace':True, 'samePhotoReplaceProtocol':3, 'fastBatchReplace':True, 'crossPoseLogo':False, 'mainImageStudio':True, 'officialBgApi':False, 'samePhotoEngine':'3.4-balanced-detail', 'appVersion':'2026.10.26.17','externalStickerProtocol':1, 'workspaceSession':ai_jobs.session, 'blobDownloadRecovery':True, 'geminiApiProtocol':GEMINI_API_PROTOCOL, 'service':'patchi-helper', 'browserAutomation':True, 'automationProtocol':AUTOMATION_PROTOCOL, 'targetSite':SITE, 'navigationGuard':True, 'clickStartSupported':True, 'hdDownloadSupported':True, 'singleImageMode':True, 'downloadFolder':str(DOWNLOAD_DIR), 'autoOpenEditor':True, 'persistentLogin':True, 'loginActive':login_active, 'loginMessage':login_message, 'systemProfilePreferred': False, 'reuseSingleWindow': True, 'backgroundSinglePage': True, 'formatDialogPNG': True, 'recommendationDialogDismiss': True})
         if self.path == '/auto/status':
             return self.reply_json(200, api_state())
         if self.path.startswith('/auto/diagnostic/'):
@@ -1764,6 +1777,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply_json(403,{'error':'拒绝非本地编辑器请求'})
             if self.path.startswith(('/gemini/','/ai/')) and origin != f'http://{HOST}:{PORT}' and origin != f'http://localhost:{PORT}':
                 return self.reply_json(403, {'error':'请从本机助手 http://127.0.0.1:8765 打开编辑器；不要双击 HTML 文件'})
+            if self.path.startswith(('/comfy/','/main/')):
+                if origin not in (f'http://{HOST}:{PORT}',f'http://localhost:{PORT}'):return self.reply_json(403,{'error':'请从本机工坊打开贴标入口'})
+                data=json.loads(self.body(limit=300*1024*1024))
+                if self.path=='/main/local':
+                    from patchi_mainphoto import prepare,compose,local_plan
+                    original,_,layers=prepare(data);return self.reply_json(200,compose(original,layers,local_plan(layers)))
+                if self.path=='/comfy/settings':return self.reply_json(200,comfy_bridge.configure(data))
+                if self.path=='/comfy/check':return self.reply_json(200,comfy_bridge.check())
+                if self.path=='/comfy/submit':return self.reply_json(200,comfy_bridge.submit(data,ai_jobs.session))
+                if self.path=='/comfy/cancel':return self.reply_json(200,comfy_bridge.cancel(data['id'],ai_jobs.session))
+                if self.path=='/comfy/export':return self.reply(200,comfy_bridge.export(data['id'],ai_jobs.session,data.get('accepted')),'application/zip')
+                return self.reply_json(404,{'error':'未知贴标接口'})
             if self.path.startswith('/replace/batch/'):
                 if origin not in (f'http://{HOST}:{PORT}', f'http://localhost:{PORT}'):
                     return self.reply_json(403, {'error':'请从本机编辑器启动批量套图'})
@@ -1782,6 +1807,7 @@ class Handler(BaseHTTPRequestHandler):
                 if origin or self.headers.get('X-Patchi-Launcher')!='1':
                     return self.reply_json(403,{'error':'仅启动器可开始新工作'})
                 stop_flag=True
+                comfy_bridge.reset()
                 return self.reply_json(200,{'session':ai_jobs.reset()})
             if self.path.startswith('/ai/jobs/') and self.path.endswith('/cancel'):
                 data=json.loads(self.body(limit=4096));return self.reply_json(200,ai_jobs.cancel(self.path.split('/')[-2],data.get('session')))
@@ -1789,7 +1815,8 @@ class Handler(BaseHTTPRequestHandler):
                 data=json.loads(self.body(limit=384*1024*1024))
                 return self.reply_json(200,ai_jobs.submit(data,dispatch_ai,data.get('model') or ai_pool.model_for(data.get('feature'))))
             if self.path == '/gemini/main-image':
-                return self.reply_json(200,dispatch_ai('main-image',json.loads(self.body(limit=384*1024*1024)),ai_pool.model_for('main-image')))
+                self.body(limit=384*1024*1024)
+                return self.reply_json(410,{'error':'制作主图 AI 已移除，请打开外部批量贴标'})
             if self.path == '/gemini/models/check':
                 self.body(limit=4096)
                 return self.reply_json(200, ai_pool.start_check())

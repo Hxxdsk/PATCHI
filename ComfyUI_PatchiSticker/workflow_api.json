@@ -1,0 +1,28 @@
+{
+  "1": {
+    "class_type": "PatchiSticker",
+    "inputs": {
+      "task_json": "{\"runId\": \"example_batch_01\", \"original\": \"patchi_example/color02.png\", \"reference\": \"patchi_example/color01.png\", \"logos\": [{\"id\": \"chest_logo\", \"image\": \"patchi_example/logo.png\", \"x\": 950, \"y\": 600, \"w\": 260, \"h\": 130, \"rotation\": 0, \"role\": \"chest\", \"linked\": true}], \"options\": {\"align\": true, \"edge\": true, \"warp\": 0.5, \"light\": 0.55}}"
+    }
+  },
+  "2": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "1",
+        0
+      ],
+      "filename_prefix": "patchi_example/final"
+    }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "1",
+        1
+      ],
+      "filename_prefix": "patchi_example/overlay"
+    }
+  }
+}

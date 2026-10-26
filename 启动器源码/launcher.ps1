@@ -70,7 +70,7 @@ $script:Log = Join-Path $script:Runtime 'launcher.log'
 $script:Busy = $false
 $script:StopRequested = $false
 $script:State = $null
-$Version = '2026.10.23.16'
+$Version = '2026.10.26.17'
 $PythonUrl = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe'
 $PythonSha = '67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb'
 $Probe = @'
@@ -215,7 +215,7 @@ function Update-EnvironmentCards {
 
 function Check-Environment {
     Set-Status '正在检查程序文件、Python、依赖和浏览器…'
-    foreach($name in @('帕琪工坊.py','帕琪工坊_智能详情页制作工具.html','patchi_samephoto.py','patchi_download_stable.py','requirements_套图.txt','patchi_batch.py','patchi_mainphoto.py','patchi_ai.py','patchi_ai_prompts.py')) {
+    foreach($name in @('帕琪工坊.py','帕琪工坊_智能详情页制作工具.html','patchi_samephoto.py','patchi_download_stable.py','requirements_套图.txt','patchi_batch.py','patchi_mainphoto.py','patchi_ai.py','patchi_ai_prompts.py','patchi_comfy.py','patchi_external.html','patchi_external.js','patchi_external.css','ComfyUI部署教程.html')) {
         if(-not(Test-Path -LiteralPath (Join-Path $AppDir $name) -PathType Leaf)){throw ('更新包缺少 '+$name+'，请完整解压后启动。')}
     }
     $python=Find-Python; $browser=Find-Browser

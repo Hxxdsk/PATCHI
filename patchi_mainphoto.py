@@ -285,38 +285,11 @@ def align_to_reference(payload,original,composite,key,model,transport):
     return adjusted,str(plan.get('summary',''))[:800]+('；'+'；'.join(warnings) if warnings else '')
 
 
-def process(payload, key, model, transport=None):
-    report('stage','正在读取主图与 Logo 原始像素',phase='准备图片');original,composite,layers=prepare(payload);mode=payload.get('assistantMode','ai')
-    if mode not in ('local','ai'):raise ValueError('主图辅助模式无效')
-    if mode=='local':
-        report('stage','本地光影融合，不调用 API',phase='本地合成');return compose(original,layers,local_plan(layers))
-    if not key:raise ValueError('请先在 Gemini API 设置保存密钥，或使用本地光影融合')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}',model):raise ValueError('Gemini 模型标识无效')
-    report('stage','参考首图校准位置和角度' if payload.get('reference') else '首图沿用用户摆位，准备遮挡与光影检查',phase='首图定位' if payload.get('reference') else '准备贴合')
-    entries,alignment=align_to_reference(payload,original,composite,key,model,transport)
-    # Rebuild from original logo pixels once, then ask about FINAL crop coordinates.
-    original,composite,layers=prepare({**payload,'logos':entries})
-    check_cancel();report('stage','检查最终摆位的衣领、抽绳、边缘和褶皱',phase='遮挡与光影')
-    plan=request_plan(original,composite,layers,key,model,transport,advanced=True)
-    for region in plan.get('regions',[]):
-        region['_advanced']=True;region['_recover']=True
-        defaults=local_plan(layers)['regions'][0]
-        for name,low,high in [('lightStrength',0,1),('textureStrength',0,.65),('gain',.8,1.2),('shadowDx',-15,15),('shadowDy',-15,15),('shadowBlur',0,15),('shadowOpacity',0,.2),('occlusionConfidence',0,1)]:
-            value=region.get(name,defaults.get(name,0))
-            if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value):region[name]=max(low,min(high,value))
-            else:region[name]=defaults.get(name,0)
-        material=str(region.get('material','print')).lower().strip();region['material']=material if material in ('print','woven','embroidered','patch') else 'print'
-        warp=region.get('warp',[])
-        if isinstance(warp,list) and len(warp)==5 and all(isinstance(row,list) and len(row)==5 and isinstance(row[0],list) for row in warp):region['warp']=[pair for row in warp for pair in row]
-        if not isinstance(region.get('occlusions'),list):region['occlusions']=[];region['note']=str(region.get('note',''))+'；未返回可靠遮挡轮廓，保留原标识'
-    report('stage','用原始 Logo 像素合成，保留原图其他区域',phase='合成预览')
-    result=compose(original,layers,plan)
-    result['placements']=[{k:e.get(k,0) for k in ('id','x','y','w','h','rotation')} for e in entries]
-    if alignment:result['summary']=alignment+'\n'+result['summary']
-    notes='；'.join(r['note'] for r in result['regions'] if r.get('note'))
-    if notes:result['summary']+='\n'+notes
-    result['model']=model;result['notice']='AI 已结合原图生成真实贴合建议；请复核领口、抽绳、边缘与颜色图定位后应用。'
-    return result
+def process(payload, key=None, model=None, transport=None):
+    if payload.get('assistantMode','local')!='local':raise ValueError('制作主图 AI 已移除，请使用外部批量贴标')
+    report('stage','本地光影融合，不调用 API',phase='本地合成')
+    original,_,layers=prepare(payload)
+    return compose(original,layers,local_plan(layers))
 
 
 def process_overlay(payload,key,model,transport=None):
