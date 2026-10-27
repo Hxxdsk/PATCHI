@@ -286,7 +286,7 @@ def align_to_reference(payload,original,composite,key,model,transport):
 
 
 def process(payload, key=None, model=None, transport=None):
-    if payload.get('assistantMode','local')!='local':raise ValueError('制作主图 AI 已移除，请使用外部批量贴标')
+    if payload.get('assistantMode','local')!='local':raise ValueError('制作主图仅提供手动贴标与本地光影融合')
     report('stage','本地光影融合，不调用 API',phase='本地合成')
     original,_,layers=prepare(payload)
     return compose(original,layers,local_plan(layers))

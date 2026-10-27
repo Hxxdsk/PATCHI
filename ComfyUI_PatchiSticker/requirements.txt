@@ -1,5 +1,0 @@
-transformers>=4.44,<5
-huggingface-hub>=0.24,<1
-safetensors>=0.4
-opencv-python-headless>=4.8
-Pillow>=10
